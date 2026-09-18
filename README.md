@@ -44,6 +44,10 @@ make iso
 make verbose-iso
 ```
 
+# Documentation
+[docs/](/docs/README.md) — build process, scripts reference, custom build
+configuration, and the web UI (tech stack + installation).
+
 # Tips
 [Tips](/TIPS.md)
 
@@ -52,3 +56,15 @@ make verbose-iso
 
 # Todo
 [TODO](/TODO.md)
+
+# Web build interface
+
+A Go + React build manager provides guided Docker builds, live compilation logs,
+profiles, a persistent queue, and authenticated team access.
+See [web interface setup and deployment](webui/README.md).
+
+```sh
+cd webui
+make build
+./ydfs-web --repo .. --dev --port 8080
+```
