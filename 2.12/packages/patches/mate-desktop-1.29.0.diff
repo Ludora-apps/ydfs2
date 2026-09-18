@@ -1,0 +1,13 @@
+diff --git a/po/fr.po b/po/fr.po
+index 05114f0..17d8fa3 100644
+--- a/po/fr.po
++++ b/po/fr.po
+@@ -63,7 +63,7 @@ msgstr "En savoir plus sur MATE"
+ 
+ #: mate-about/mate-about.h:29
+ msgid "MATE Desktop Environment"
+-msgstr "Environnement de bureau MATE"
++msgstr "Environnement de bureau MATE - LinuxConsole 2026"
+ 
+ #: mate-about/mate-about.h:34
+ msgid ""
