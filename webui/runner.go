@@ -215,7 +215,12 @@ func (a *App) submit(w http.ResponseWriter, r *http.Request) {
 	if data, e := diff.Output(); e == nil {
 		os.WriteFile(filepath.Join(dir, "working-tree.patch"), data, 0600)
 	}
-	if e = os.WriteFile(filepath.Join(dir, "build.log"), nil, 0600); e != nil {
+	if e = os.MkdirAll(a.logDir(), 0700); e != nil {
+		os.RemoveAll(dir)
+		fail(w, 500, e.Error())
+		return
+	}
+	if e = os.WriteFile(a.logPath(j.ID), nil, 0600); e != nil {
 		os.RemoveAll(dir)
 		fail(w, 500, e.Error())
 		return
@@ -333,6 +338,12 @@ func (a *App) deleteJob(w http.ResponseWriter, r *http.Request) {
 	}
 	a.command(ctx, "rm", j.Container).Run()
 	if e = os.RemoveAll(a.dir(j)); e != nil {
+		fail(w, 500, e.Error())
+		return
+	}
+	// The log no longer lives under the job directory, so it needs removing
+	// explicitly: a build's log must not outlive the build.
+	if e = a.removeLog(j.ID); e != nil {
 		fail(w, 500, e.Error())
 		return
 	}
@@ -638,7 +649,7 @@ exec make "$1"`, 1)
 	}
 }
 func (a *App) captureLogs(ctx context.Context, j *Job) error {
-	path := filepath.Join(a.dir(j), "build.log")
+	path := a.logPath(j.ID)
 	f, e := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if e != nil {
 		return e
@@ -769,7 +780,7 @@ func (a *App) events(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	f, e := os.Open(filepath.Join(a.dir(j), "build.log"))
+	f, e := os.Open(a.logPath(j.ID))
 	if e != nil {
 		fail(w, 404, "log unavailable")
 		return
@@ -843,7 +854,7 @@ func (a *App) downloadLog(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Disposition", `attachment; filename="build.log"`)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	http.ServeFile(w, r, filepath.Join(a.dir(j), "build.log"))
+	http.ServeFile(w, r, a.logPath(j.ID))
 }
 func (a *App) downloadArtifact(w http.ResponseWriter, r *http.Request) {
 	j, e := a.job(r.PathValue("id"))

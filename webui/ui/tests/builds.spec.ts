@@ -5,6 +5,7 @@ async function fixture(
 ) {
   let jobs: any[] = [];
   let profiles: any[] = [];
+  let logs = true;
   await page.route("**/api/**", async (route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
@@ -84,9 +85,31 @@ async function fixture(
       ];
       return json(jobs[0], 202);
     }
-    if (path === "/api/jobs" && method === "DELETE") {
-      jobs = [];
-      return json({ ok: true });
+    // Order matters: the log routes are more specific than the job routes.
+    if (path === "/api/logs")
+      return json(
+        jobs.map((j: any) => ({
+          id: j.id,
+          target: j.settings.target,
+          state: j.state,
+          created: j.created,
+          user: j.user,
+          size: 4096,
+          present: logs,
+        })),
+      );
+    if (path.endsWith("/log")) {
+      if (method === "DELETE") {
+        logs = false;
+        return json({ ok: true });
+      }
+      // Mirrors downloadLog, which serves the log as an attachment.
+      return route.fulfill({
+        status: 200,
+        contentType: "text/plain",
+        headers: { "content-disposition": 'attachment; filename="build.log"' },
+        body: "g++ -Wall fixture.cpp -o fixture\nCompiling LinuxConsole…\nlinking fixture\n",
+      });
     }
     if (path.startsWith("/api/jobs/") && method === "DELETE") {
       jobs = [];
@@ -97,7 +120,12 @@ async function fixture(
       jobs[0].favorite = method === "POST";
       return json(jobs[0]);
     }
-    if (path.endsWith("/config")) return route.fulfill({ status: 200, contentType: "text/plain", body: "ARCH=x86_64\n" });
+    if (path.endsWith("/config"))
+      return route.fulfill({
+        status: 200,
+        contentType: "text/plain",
+        body: 'ARCH=x86_64\nKERNEL3=6.18.29\nDISTRONAME=linuxconsole\nMODULES="x86_64 mate-x86_64"\nBUILDYDFS=fast\n',
+      });
     if (path.endsWith("/cancel")) {
       jobs[0].state = "cancelled";
       return json(jobs[0]);
@@ -116,12 +144,6 @@ async function fixture(
       }
       return route.fulfill({ contentType: "text/event-stream", body });
     }
-    if (path.endsWith("/log"))
-      return route.fulfill({
-        contentType: "text/plain",
-        headers: { "Content-Disposition": 'attachment; filename="build.log"' },
-        body: "complete build log",
-      });
     if (path.includes("/artifacts/"))
       return route.fulfill({
         contentType: "application/octet-stream",
@@ -143,14 +165,17 @@ test("profile to build, live log, completion and downloads", async ({
   await page.getByRole("button", { name: "Save current settings" }).click();
   await expect(page.getByText("Profile saved.")).toBeVisible();
   await page.getByRole("button", { name: "Queue build" }).click();
-  await expect(page.getByText("succeeded", { exact: true })).toBeVisible();
+  await expect(page.locator("section.history").getByText("succeeded", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Build log")).toBeHidden();
   await page.getByRole("button", { name: "Open log", exact: true }).click();
   await expect(page.getByLabel("Build log")).toContainText("g++ -Wall");
   await page.getByLabel("Filter log").fill("g++");
   await expect(page.getByLabel("Build log")).not.toContainText("Compiling");
   const download = page.waitForEvent("download");
-  await page.getByRole("link", { name: "Download log" }).click();
+  await page
+    .locator("section.details")
+    .getByRole("link", { name: "Download log" })
+    .click();
   expect((await download).suggestedFilename()).toBe("build.log");
   await page.getByRole("button", { name: "Close log", exact: true }).click();
   await expect(page.getByLabel("Build log")).toBeHidden();
@@ -167,7 +192,7 @@ test("running build can be cancelled", async ({ page }) => {
     page.getByRole("button", { name: "Cancel build", exact: true }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Cancel build", exact: true }).click();
-  await expect(page.getByText("cancelled", { exact: true })).toBeVisible();
+  await expect(page.locator("section.history").getByText("cancelled", { exact: true })).toBeVisible();
 });
 test("failed builds show exit status and logs", async ({ page }) => {
   await fixture(page, "failure");
@@ -193,13 +218,13 @@ test("Flathub applications are selected into the build", async ({ page }) => {
   await page.getByLabel("Build target").selectOption("fast-iso");
   await expect(page.getByRole("checkbox", { name: "VLC" })).toBeChecked();
   await page.getByRole("button", { name: "Queue build" }).click();
-  await expect(page.getByText("succeeded", { exact: true })).toBeVisible();
+  await expect(page.locator("section.history").getByText("succeeded", { exact: true })).toBeVisible();
   await expect(page.getByText("1 Flathub app(s)")).toBeVisible();
 });
 test("a succeeded build can be kept and released", async ({ page }) => {
   await fixture(page);
   await page.getByRole("button", { name: "Queue build" }).click();
-  await expect(page.getByText("succeeded", { exact: true })).toBeVisible();
+  await expect(page.locator("section.history").getByText("succeeded", { exact: true })).toBeVisible();
   const kept = page.getByRole("heading", { name: "Kept builds" });
   await expect(kept).toBeHidden();
   // Pin it: the separate box appears, offering the ISO and the archived config.
@@ -207,7 +232,7 @@ test("a succeeded build can be kept and released", async ({ page }) => {
   await expect(kept).toBeVisible();
   const box = page.locator("section.favorites");
   await expect(box.getByRole("link", { name: /linuxconsole.iso/ })).toBeVisible();
-  await expect(box.getByRole("link", { name: /config.ini/ })).toBeVisible();
+  await expect(box.getByRole("button", { name: "config.ini" })).toBeVisible();
   await expect(box.getByRole("button", { name: "Delete" })).toBeVisible();
   // Releasing it empties the box again.
   await box.getByRole("button", { name: "Release" }).click();
@@ -224,7 +249,7 @@ test("destructive actions confirm in a modal, never a native dialog", async ({
   });
   await fixture(page);
   await page.getByRole("button", { name: "Queue build" }).click();
-  await expect(page.getByText("succeeded", { exact: true })).toBeVisible();
+  await expect(page.locator("section.history").getByText("succeeded", { exact: true })).toBeVisible();
 
   const modal = page.getByRole("dialog");
   await expect(modal).toBeHidden();
@@ -235,7 +260,7 @@ test("destructive actions confirm in a modal, never a native dialog", async ({
   // Escape dismisses, and the build survives.
   await page.keyboard.press("Escape");
   await expect(modal).toBeHidden();
-  await expect(page.getByText("succeeded", { exact: true })).toBeVisible();
+  await expect(page.locator("section.history").getByText("succeeded", { exact: true })).toBeVisible();
 
   // Cancel dismisses too, and holds focus for a destructive action.
   await page.getByRole("button", { name: "Delete build" }).click();
@@ -243,7 +268,7 @@ test("destructive actions confirm in a modal, never a native dialog", async ({
   await expect(page.getByRole("button", { name: "Cancel" })).toBeFocused();
   await page.getByRole("button", { name: "Cancel" }).click();
   await expect(modal).toBeHidden();
-  await expect(page.getByText("succeeded", { exact: true })).toBeVisible();
+  await expect(page.locator("section.history").getByText("succeeded", { exact: true })).toBeVisible();
 
   // Confirming actually deletes.
   await page.getByRole("button", { name: "Delete build" }).click();
@@ -252,11 +277,117 @@ test("destructive actions confirm in a modal, never a native dialog", async ({
   await expect(page.getByText("Your first build starts here")).toBeVisible();
   expect(native).toBe(0);
 });
+test("build logs are listed, searchable with highlight, and deletable", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.getByRole("button", { name: "Queue build" }).click();
+  await expect(
+    page.locator("section.history").getByText("succeeded", { exact: true }),
+  ).toBeVisible();
+
+  const box = page.locator("section.logs-box");
+  await expect(box.getByRole("heading", { name: "Build logs" })).toBeVisible();
+  const row = box.locator(".log-row");
+  await expect(row).toHaveCount(1);
+  await expect(row.getByRole("link")).toHaveAttribute(
+    "href",
+    "/api/jobs/build-01/log",
+  );
+
+  // Opening a listed log gives the whole file in a full-page reader.
+  await box.locator(".log-open").click();
+  const viewer = page.getByRole("dialog");
+  await expect(viewer).toBeVisible();
+  await expect(page.getByLabel("File contents")).toContainText("linking fixture");
+
+  // Under two characters it refuses to search rather than matching everything.
+  await page.getByLabel("Search text").fill("g");
+  await expect(viewer).toContainText("2+ characters");
+
+  // A real search highlights every match and steps through them.
+  await page.getByLabel("Search text").fill("fixture");
+  await expect(viewer).toContainText("1 / 3");
+  await expect(page.locator("mark")).toHaveCount(3);
+  await expect(page.locator("mark.current")).toHaveCount(1);
+  await page.getByRole("button", { name: "Next match" }).click();
+  await expect(viewer).toContainText("2 / 3");
+  // And wraps around.
+  await page.getByRole("button", { name: "Previous match" }).click();
+  await page.getByRole("button", { name: "Previous match" }).click();
+  await expect(viewer).toContainText("3 / 3");
+
+  await page.getByLabel("Search text").fill("nothing-matches-this");
+  await expect(viewer).toContainText("No match");
+  await expect(page.locator("mark")).toHaveCount(0);
+
+  // Deleting the log confirms in a modal, keeps the build, and empties the box.
+  await viewer.getByRole("button", { name: "Delete log" }).click();
+  await expect(page.getByText("only the log file is removed")).toBeVisible();
+  await page.getByRole("button", { name: "Delete log" }).last().click();
+  await expect(box.locator(".log-row")).toHaveCount(0);
+  await expect(
+    page.locator("section.history").getByText("succeeded", { exact: true }),
+  ).toBeVisible();
+});
+test("the as-built config.ini opens in a modal, not a browser tab", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.getByRole("button", { name: "Queue build" }).click();
+  await expect(
+    page.locator("section.history").getByText("succeeded", { exact: true }),
+  ).toBeVisible();
+
+  const details = page.locator("section.details");
+  const opener = details.getByRole("button", { name: /config.ini/ });
+  // A button, not a link: nothing here should navigate away or open a tab.
+  await expect(opener).toBeVisible();
+  await expect(details.getByRole("link", { name: /config.ini/ })).toHaveCount(0);
+
+  await opener.click();
+  const viewer = page.getByRole("dialog");
+  await expect(viewer).toBeVisible();
+  await expect(viewer).toContainText("config.ini");
+  await expect(viewer).toContainText("as built");
+  await expect(page.getByLabel("File contents")).toContainText(
+    'MODULES="x86_64 mate-x86_64"',
+  );
+  // Sized to its content rather than filling the viewport like a log. A modal
+  // <dialog> is fixed with inset 0, so `height:auto` would stretch to the full
+  // screen; this guards that regression and the overflow that follows it.
+  await expect(page.locator("dialog.logviewer.compact")).toHaveCount(1);
+  const size = await page.evaluate(() => {
+    const d = document.querySelector("dialog.logviewer") as HTMLElement;
+    const t = d.querySelector(".logviewer-text") as HTMLElement;
+    return {
+      dialog: d.getBoundingClientRect().height,
+      viewport: window.innerHeight,
+      overflows: t.scrollHeight > t.clientHeight,
+    };
+  });
+  expect(size.dialog).toBeLessThan(size.viewport * 0.75);
+  expect(size.overflows).toBe(false);
+  // It is a config, so there is nothing to delete from here.
+  await expect(viewer.getByRole("button", { name: /Delete/ })).toHaveCount(0);
+  await expect(viewer.getByRole("link", { name: "Download" })).toHaveAttribute(
+    "href",
+    "/api/jobs/build-01/config",
+  );
+
+  // Search works here too.
+  await page.getByLabel("Search text").fill("x86_64");
+  await expect(viewer).toContainText("1 / 3");
+  await expect(page.locator("mark")).toHaveCount(3);
+
+  await page.keyboard.press("Escape");
+  await expect(viewer).toBeHidden();
+});
 test("mobile layout has no horizontal overflow", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await fixture(page);
   await page.getByRole("button", { name: "Queue build" }).click();
-  await expect(page.getByText("succeeded", { exact: true })).toBeVisible();
+  await expect(page.locator("section.history").getByText("succeeded", { exact: true })).toBeVisible();
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,

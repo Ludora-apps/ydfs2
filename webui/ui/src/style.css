@@ -584,7 +584,8 @@ dd {
 .artifacts {
   margin-bottom: 18px;
 }
-.artifacts a {
+.artifacts a,
+.artifacts .artifact-open {
   display: flex;
   justify-content: space-between;
   gap: 12px;
@@ -596,9 +597,29 @@ dd {
   margin-top: 6px;
   overflow-wrap: anywhere;
 }
+/* A <button> does not inherit the anchor's font, colour or width. */
+.artifacts .artifact-open {
+  width: 100%;
+  align-items: center;
+  font-family: inherit;
+  font-weight: 600;
+  color: var(--accent-text);
+  text-align: left;
+  cursor: pointer;
+}
+.artifacts a {
+  color: var(--accent-text);
+  font-weight: 600;
+  text-decoration: none;
+}
+.artifacts a:hover,
+.artifacts .artifact-open:hover {
+  text-decoration: underline;
+}
 .artifacts small {
   white-space: nowrap;
   color: var(--muted);
+  font-weight: 400;
 }
 .build-error {
   color: var(--danger-text);
@@ -868,6 +889,185 @@ footer {
   }
   .modal-actions button {
     width: 100%;
+  }
+}
+
+/* Full-page log reader. Same <dialog> primitive as the confirmation modal,
+   sized to the viewport so a long log scrolls inside it. */
+.logviewer {
+  width: calc(100vw - 32px);
+  max-width: none;
+  height: calc(100vh - 32px);
+  max-height: none;
+}
+/* A config.ini is a few dozen lines: size the reader to it rather than
+   filling the viewport the way a build log needs to. */
+.logviewer.compact {
+  width: min(760px, calc(100vw - 32px));
+  /* Not `auto`: a modal <dialog> is fixed with inset 0, so an auto height is
+     over-constrained and stretches to the viewport. fit-content is what the
+     UA stylesheet uses and what actually sizes to the content. */
+  height: fit-content;
+  max-height: calc(100vh - 96px);
+}
+/* The body's height:100% cannot resolve against a fit-content dialog, so the
+   cap and the scrolling belong on the text itself here. */
+.logviewer.compact .logviewer-body {
+  height: auto;
+}
+.logviewer.compact .logviewer-text {
+  min-height: 180px;
+  max-height: calc(100vh - 220px);
+}
+.logviewer-body {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.logviewer-body header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 15px 19px;
+  border-bottom: 1px solid var(--border);
+}
+.logviewer-body h2 {
+  font-size: 14px;
+}
+.logviewer-body header small {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.log-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.log-search input {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 11px;
+}
+.log-search .matches {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.log-search .quiet,
+.logviewer-actions .quiet {
+  width: auto;
+  margin: 0;
+  padding: 7px 11px;
+  font-size: 12px;
+}
+.logviewer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.logviewer-actions a {
+  padding: 7px 11px;
+  border-radius: 7px;
+  background: var(--soft-accent);
+  color: var(--accent-text);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.logviewer-text {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  background: var(--terminal);
+  color: var(--terminal-text);
+  padding: 15px 19px;
+}
+.logviewer-text pre {
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.logviewer-text mark {
+  background: #f5d76e;
+  color: #1c1400;
+  border-radius: 2px;
+}
+.logviewer-text mark.current {
+  background: #ff9f1c;
+  outline: 2px solid #ff9f1c;
+}
+
+/* The Build logs box. */
+.log-rows {
+  display: grid;
+  gap: 8px;
+  max-height: 320px;
+  overflow: auto;
+}
+.log-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--subtle-border);
+  border-radius: 9px;
+  background: var(--input);
+  min-width: 0;
+}
+.log-open {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.log-open strong {
+  display: block;
+  font-size: 12px;
+}
+.log-open small {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.log-open:hover strong {
+  color: var(--link);
+}
+.log-row a {
+  padding: 5px 9px;
+  border-radius: 7px;
+  background: var(--soft-accent);
+  color: var(--accent-text);
+  font-weight: 600;
+  text-decoration: none;
+}
+.log-row .quiet {
+  width: auto;
+  margin: 0;
+  padding: 5px 9px;
+}
+@media (max-width: 740px) {
+  .logviewer-body header {
+    flex-direction: column;
+    align-items: stretch;
   }
 }
 

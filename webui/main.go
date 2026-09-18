@@ -138,6 +138,7 @@ func main() {
 	}
 	// Apply retention once at startup, so a policy change (or builds made
 	// while the service was down) takes effect without waiting for a new build.
+	a.migrateLogs()
 	a.mu.Lock()
 	a.pruneLocked()
 	a.mu.Unlock()
@@ -217,6 +218,8 @@ func (a *App) handler() http.Handler {
 	mux.HandleFunc("DELETE /api/jobs/{id}", a.deleteJob)
 	mux.HandleFunc("GET /api/jobs/{id}/events", a.events)
 	mux.HandleFunc("GET /api/jobs/{id}/log", a.downloadLog)
+	mux.HandleFunc("DELETE /api/jobs/{id}/log", a.deleteLog)
+	mux.HandleFunc("GET /api/logs", a.logs)
 	mux.HandleFunc("GET /api/jobs/{id}/artifacts/{name}", a.downloadArtifact)
 	mux.HandleFunc("GET /api/packages", a.packageLists)
 	mux.HandleFunc("GET /api/packages/{name}", a.packageListContent)

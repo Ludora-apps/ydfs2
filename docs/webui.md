@@ -138,6 +138,20 @@ long time. Run it through the UI itself and verify the resulting ISO boots
 before distributing it; see `VALIDATION.md` for the last recorded smoke run
 and its SHA256-verified artifact download.
 
+## Build logs
+
+All build logs live together in `DATA/logs-build/<job id>.log` rather than
+inside each job's directory, so they outlive the artifacts they describe. The
+**Build logs** box lists them; opening one gives a full-page reader with
+scrolling and a text search that highlights every match and steps through them.
+Each log can be downloaded or deleted on its own, and deleting a build always
+deletes its log. Logs from earlier versions are migrated at startup.
+
+The same reader shows a build's archived `config.ini` — the configuration the
+build actually ran with — from the build details box and from **Kept builds**.
+It opens in the page rather than a browser tab, sized to its content, and is
+searchable and downloadable like a log.
+
 ## Keeping build artifacts
 
 Artifacts are on a rolling window of 3, counted separately for ISOs and for

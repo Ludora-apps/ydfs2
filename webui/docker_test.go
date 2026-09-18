@@ -77,7 +77,7 @@ func TestDockerLifecycle(t *testing.T) {
 	if finished.State != "succeeded" || len(finished.Artifacts) != 1 {
 		t.Fatalf("first failed: %#v", finished)
 	}
-	b, e := os.ReadFile(filepath.Join(a.dir(first), "build.log"))
+	b, e := os.ReadFile(a.logPath(first.ID))
 	if e != nil || strings.Count(string(b), "C++ compilation fixture passed") != 1 {
 		t.Fatal("log replay duplicated or lost output", e, string(b))
 	}

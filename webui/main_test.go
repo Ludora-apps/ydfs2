@@ -47,7 +47,7 @@ func putFile(t *testing.T, p, s string) {
 func saveFixtureJob(t *testing.T, a *App, state string) *Job {
 	t.Helper()
 	j := &Job{ID: "test-job", State: state, User: "alice", Settings: Settings{Target: "fast-iso", Verbose: true}, Created: now(), Artifacts: []Artifact{}}
-	putFile(t, filepath.Join(a.dir(j), "build.log"), "")
+	putFile(t, a.logPath(j.ID), "")
 	if e := a.saveJob(j); e != nil {
 		t.Fatal(e)
 	}
@@ -294,7 +294,7 @@ func saveArtifactJob(t *testing.T, a *App, id, target, artifact string) *Job {
 	j := &Job{ID: id, State: "succeeded", User: "alice", Settings: Settings{Target: target, Flatpaks: []string{}}, Created: now(), Artifacts: []Artifact{{artifact, 4}}}
 	putFile(t, filepath.Join(a.dir(j), "output", artifact), "iso!")
 	putFile(t, filepath.Join(a.dir(j), "output", "config.ini"), "ARCH=x86_64\n")
-	putFile(t, filepath.Join(a.dir(j), "build.log"), "compiling\n")
+	putFile(t, a.logPath(j.ID), "compiling\n")
 	if e := a.saveJob(j); e != nil {
 		t.Fatal(e)
 	}
@@ -341,10 +341,11 @@ func TestRetentionKeepsLastThreeOfEachClass(t *testing.T) {
 			t.Fatalf("%s: not marked pruned: %+v", tt.id, j)
 		}
 		// The cheap, useful parts of a build always survive.
-		for _, keep := range []string{filepath.Join("output", "config.ini"), "build.log"} {
-			if _, e := os.Stat(filepath.Join(a.data, "jobs", tt.id, keep)); e != nil {
-				t.Fatalf("%s: retention removed %s", tt.id, keep)
-			}
+		if _, e := os.Stat(filepath.Join(a.data, "jobs", tt.id, "output", "config.ini")); e != nil {
+			t.Fatalf("%s: retention removed config.ini", tt.id)
+		}
+		if _, e := os.Stat(a.logPath(tt.id)); e != nil {
+			t.Fatalf("%s: retention removed the build log", tt.id)
 		}
 	}
 }
@@ -429,6 +430,112 @@ func TestArchivedConfigIsReadable(t *testing.T) {
 	}
 	if w := request(a, "GET", "/api/jobs/missing/config", ""); w.Code != 404 {
 		t.Fatal(w.Code)
+	}
+}
+func TestBuildLogsAreCentralisedAndListable(t *testing.T) {
+	a := testApp(t)
+	j := saveArtifactJob(t, a, "20260101", "fast-iso", "linuxconsole.iso")
+	if _, e := os.Stat(filepath.Join(a.data, "logs-build", "20260101.log")); e != nil {
+		t.Fatal("log is not in the shared directory:", e)
+	}
+	w := request(a, "GET", "/api/logs", "")
+	var entries []LogEntry
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &entries) != nil {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if len(entries) != 1 || entries[0].ID != j.ID || !entries[0].Present || entries[0].Size == 0 {
+		t.Fatalf("unexpected listing: %+v", entries)
+	}
+	if entries[0].Target != "fast-iso" || entries[0].State != "succeeded" {
+		t.Fatalf("listing lost the build context: %+v", entries[0])
+	}
+	// Deleting a log leaves the build, which is then reported without one.
+	if w := request(a, "DELETE", "/api/jobs/20260101/log", ""); w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if _, e := a.job("20260101"); e != nil {
+		t.Fatal("deleting a log deleted the build")
+	}
+	w = request(a, "GET", "/api/logs", "")
+	json.Unmarshal(w.Body.Bytes(), &entries)
+	if len(entries) != 1 || entries[0].Present || entries[0].Size != 0 {
+		t.Fatalf("log still reported present: %+v", entries)
+	}
+	// Deleting it twice is not an error.
+	if w := request(a, "DELETE", "/api/jobs/20260101/log", ""); w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+}
+func TestDeletingABuildDeletesItsLog(t *testing.T) {
+	a := testApp(t)
+	// deleteJob confirms the container is gone before removing anything.
+	p := filepath.Join(t.TempDir(), "docker")
+	putFile(t, p, "#!/bin/sh\necho 'Error: No such object: x' >&2\nexit 1\n")
+	os.Chmod(p, 0755)
+	a.docker = p
+	saveArtifactJob(t, a, "20260101", "fast-iso", "linuxconsole.iso")
+	path := a.logPath("20260101")
+	if _, e := os.Stat(path); e != nil {
+		t.Fatal(e)
+	}
+	if w := request(a, "DELETE", "/api/jobs/20260101", ""); w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	// The log now lives outside the job directory, so it has to be removed
+	// explicitly; a build's log must never outlive the build.
+	if _, e := os.Stat(path); !os.IsNotExist(e) {
+		t.Fatal("log outlived its build")
+	}
+}
+func TestRunningBuildLogCannotBeDeleted(t *testing.T) {
+	a := testApp(t)
+	j := saveFixtureJob(t, a, "running")
+	if w := request(a, "DELETE", "/api/jobs/"+j.ID+"/log", ""); w.Code != 409 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if _, e := os.Stat(a.logPath(j.ID)); e != nil {
+		t.Fatal("log of a running build was removed")
+	}
+}
+func TestLogsMigrateFromTheOldPerJobLocation(t *testing.T) {
+	a := testApp(t)
+	j := &Job{ID: "20260101", State: "succeeded", User: "alice", Settings: Settings{Target: "fast-iso"}, Created: now(), Artifacts: []Artifact{}}
+	if e := a.saveJob(j); e != nil {
+		t.Fatal(e)
+	}
+	// Written where earlier versions kept it.
+	putFile(t, filepath.Join(a.dir(j), "build.log"), "historic output\n")
+	a.migrateLogs()
+	b, e := os.ReadFile(a.logPath("20260101"))
+	if e != nil || string(b) != "historic output\n" {
+		t.Fatal("log was not migrated:", e, string(b))
+	}
+	if _, e := os.Stat(filepath.Join(a.dir(j), "build.log")); !os.IsNotExist(e) {
+		t.Fatal("old log left behind")
+	}
+	// Re-running must not clobber a log that has since been appended to.
+	putFile(t, filepath.Join(a.dir(j), "build.log"), "stale\n")
+	a.migrateLogs()
+	b, _ = os.ReadFile(a.logPath("20260101"))
+	if string(b) != "historic output\n" {
+		t.Fatal("migration overwrote the current log:", string(b))
+	}
+}
+func TestLogPathRejectsTraversal(t *testing.T) {
+	a := testApp(t)
+	for _, id := range []string{"../../etc/passwd", "..", "a/b", "", strings.Repeat("x", 129), "a\x00b", "..%2f", "x/../../y"} {
+		if p := a.logPath(id); p != "" {
+			t.Fatalf("accepted unsafe job id %q -> %q", id, p)
+		}
+	}
+	if a.logPath("20260101T000000.000000000-abcdef123456") == "" {
+		t.Fatal("rejected a real job id")
+	}
+	// And the HTTP surface refuses it too, rather than 500ing.
+	for _, path := range []string{"/api/jobs/..%2F..%2Fetc%2Fpasswd/log", "/api/jobs/missing/log"} {
+		if w := request(a, "DELETE", path, ""); w.Code == 200 {
+			t.Fatalf("deleted through %s", path)
+		}
 	}
 }
 func TestAuthenticationAndCSRF(t *testing.T) {
@@ -521,7 +628,7 @@ func TestLogReplayAndArtifactBoundary(t *testing.T) {
 	a := testApp(t)
 	j := saveFixtureJob(t, a, "succeeded")
 	text := strings.Repeat("compiler output\n", 50000)
-	putFile(t, filepath.Join(a.dir(j), "build.log"), text)
+	putFile(t, a.logPath(j.ID), text)
 	w := request(a, "GET", "/api/jobs/"+j.ID+"/events?offset="+fmt.Sprint(len(text)-16), "")
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "event: done") || !strings.Contains(w.Body.String(), fmt.Sprintf("id: %d", len(text))) {
 		t.Fatal(w.Code, w.Body.String())

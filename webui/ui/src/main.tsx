@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
 
@@ -96,7 +96,10 @@ const done = (s: string) => ["succeeded", "failed", "cancelled"].includes(s);
 const bytes = (n: number) =>
   n >= 2 ** 30
     ? `${(n / 2 ** 30).toFixed(1)} GB`
-    : `${(n / 2 ** 20).toFixed(1)} MB`;
+    : n >= 2 ** 20
+      ? `${(n / 2 ** 20).toFixed(1)} MB`
+      : // Logs are routinely kilobytes; without this they all read "0.0 MB".
+        `${Math.max(1, Math.round(n / 2 ** 10))} KB`;
 const date = (s?: string) => (s ? new Date(s).toLocaleString() : "—");
 const commitCard = (label: string, c?: Commit, note?: React.ReactNode) => (
   <div className="commit">
@@ -117,6 +120,197 @@ const commitCard = (label: string, c?: Commit, note?: React.ReactNode) => (
     )}
   </div>
 );
+type LogEntry = {
+  id: string;
+  target: string;
+  state: string;
+  created: string;
+  user: string;
+  size: number;
+  present: boolean;
+};
+
+// Highlighting every match of a common substring in a multi-megabyte log would
+// create more nodes than it is worth; past this the search still counts matches
+// but stops marking them.
+const maxHighlights = 4000;
+
+type TextView = {
+  // Changing key refetches; it is what the open/close effects key on.
+  key: string;
+  title: string;
+  subtitle: string;
+  url: string;
+  // Logs fill the viewport; a config.ini is a few dozen lines and should not.
+  compact?: boolean;
+  deleteLabel?: string;
+  onDelete?: () => void;
+};
+
+// One reader for every build text file: the log tail and the archived
+// config.ini both land here rather than in a browser tab, so the whole file is
+// scrollable and searchable with matches highlighted. Same <dialog> primitive
+// as ConfirmDialog, so focus trap, Escape and backdrop come for free.
+function TextViewer({
+  view,
+  onClose,
+}: {
+  view?: TextView;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+  const body = useRef<HTMLDivElement>(null);
+  const [text, setText] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const [query, setQuery] = useState("");
+  const [at, setAt] = useState(0);
+  useEffect(() => {
+    const d = ref.current;
+    if (!d) return;
+    if (view && !d.open) d.showModal();
+    else if (!view && d.open) d.close();
+  }, [view]);
+  const url = view?.url;
+  useEffect(() => {
+    if (!url) return;
+    setText("");
+    setQuery("");
+    setAt(0);
+    setLoadError("");
+    let live = true;
+    fetch(url, { headers: { "X-Requested-With": "ydfs-web" } })
+      .then((r) => (r.ok ? r.text() : Promise.reject(new Error("Not available"))))
+      .then((t) => live && setText(t))
+      .catch((e) => live && setLoadError((e as Error).message));
+    return () => {
+      live = false;
+    };
+  }, [url]);
+  // Single-character searches match almost every line and help nobody.
+  const matches = useMemo(() => {
+    const out: number[] = [];
+    if (query.length < 2) return out;
+    const hay = text.toLowerCase();
+    const needle = query.toLowerCase();
+    for (let i = hay.indexOf(needle); i !== -1; i = hay.indexOf(needle, i + needle.length))
+      out.push(i);
+    return out;
+  }, [text, query]);
+  const rendered = useMemo(() => {
+    if (matches.length === 0) return text;
+    const marked = matches.slice(0, maxHighlights);
+    const parts: React.ReactNode[] = [];
+    let last = 0;
+    marked.forEach((m, n) => {
+      if (m > last) parts.push(text.slice(last, m));
+      parts.push(
+        <mark key={n} className={n === at ? "current" : ""}>
+          {text.slice(m, m + query.length)}
+        </mark>,
+      );
+      last = m + query.length;
+    });
+    parts.push(text.slice(last));
+    return parts;
+  }, [text, query, matches, at]);
+  useEffect(() => {
+    body.current?.querySelector("mark.current")?.scrollIntoView({
+      block: "center",
+    });
+  }, [at, rendered]);
+  const step = (by: number) => {
+    if (matches.length === 0) return;
+    const n = Math.min(matches.length, maxHighlights);
+    setAt((old) => (old + by + n) % n);
+  };
+  return (
+    <dialog
+      className={`modal logviewer ${view?.compact ? "compact" : ""}`}
+      ref={ref}
+      aria-labelledby="logviewer-title"
+      onCancel={(e) => {
+        e.preventDefault();
+        onClose();
+      }}
+    >
+      {view && (
+        <div className="logviewer-body">
+          <header>
+            <div>
+              <h2 id="logviewer-title">{view.title}</h2>
+              <small>{view.subtitle}</small>
+            </div>
+            <form
+              className="log-search"
+              onSubmit={(e) => {
+                e.preventDefault();
+                step(1);
+              }}
+            >
+              <label className="sr-only" htmlFor="logviewer-search">
+                Search text
+              </label>
+              <input
+                id="logviewer-search"
+                placeholder="Search…"
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setAt(0);
+                }}
+              />
+              <span className="matches">
+                {query.length < 2
+                  ? "2+ characters"
+                  : matches.length === 0
+                    ? "No match"
+                    : `${at + 1} / ${matches.length}${matches.length > maxHighlights ? " (first " + maxHighlights + " marked)" : ""}`}
+              </span>
+              <button
+                type="button"
+                className="quiet"
+                aria-label="Previous match"
+                disabled={matches.length === 0}
+                onClick={() => step(-1)}
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                className="quiet"
+                aria-label="Next match"
+                disabled={matches.length === 0}
+                onClick={() => step(1)}
+              >
+                ↓
+              </button>
+            </form>
+            <div className="logviewer-actions">
+              <a href={view.url}>Download ↓</a>
+              {view.onDelete && (
+                <button type="button" className="quiet" onClick={view.onDelete}>
+                  {view.deleteLabel || "Delete"}
+                </button>
+              )}
+              <button type="button" className="quiet" onClick={onClose}>
+                Close
+              </button>
+            </div>
+          </header>
+          <div
+            className="logviewer-text"
+            ref={body}
+            tabIndex={0}
+            aria-label="File contents"
+          >
+            <pre>{loadError || (text ? rendered : "Loading…")}</pre>
+          </div>
+        </div>
+      )}
+    </dialog>
+  );
+}
+
 type Confirmation = {
   title: string;
   body: string;
@@ -213,6 +407,28 @@ async function api<T>(
 }
 function App() {
   const [ask, setAsk] = useState<Confirmation | undefined>();
+  const [logList, setLogList] = useState<LogEntry[]>([]);
+  const [viewing, setViewing] = useState<TextView | undefined>();
+  // Both openers build a TextView; the reader itself is agnostic.
+  function viewLog(l: LogEntry) {
+    setViewing({
+      key: `log:${l.id}`,
+      title: `${names[l.target] || l.target} · build log`,
+      subtitle: `${l.user} · ${date(l.created)} · ${bytes(l.size)}`,
+      url: `/api/jobs/${l.id}/log`,
+      deleteLabel: "Delete log",
+      onDelete: () => removeLog(l),
+    });
+  }
+  function viewConfig(j: Job) {
+    setViewing({
+      key: `config:${j.id}`,
+      title: `${names[j.settings.target] || j.settings.target} · config.ini`,
+      subtitle: `as built · ${date(j.created)} · ${j.revision.slice(0, 12)} · ${j.tag || "untagged"}`,
+      url: `/api/jobs/${j.id}/config`,
+      compact: true,
+    });
+  }
   const [theme, setTheme] = useState<"light" | "dark">(() =>
     document.documentElement.dataset.theme === "light" ? "light" : "dark",
   );
@@ -352,6 +568,19 @@ function App() {
       );
     });
   }
+  function removeLog(entry: LogEntry) {
+    setAsk({
+      title: "Delete this log?",
+      body: "The build, its configuration and its artifacts are kept; only the log file is removed. This cannot be undone.",
+      confirm: "Delete log",
+      danger: true,
+      onConfirm: () =>
+        action(async () => {
+          await api(`/jobs/${entry.id}/log`, "DELETE");
+          setViewing((old) => (old?.key === `log:${entry.id}` ? undefined : old));
+        }),
+    });
+  }
   function removeBuild(j: Job) {
     setAsk({
       title: "Delete this build?",
@@ -368,14 +597,16 @@ function App() {
   const active = jobs.find((j) => !done(j.state) && j.state !== "queued");
   const queued = jobs.filter((j) => j.state === "queued").length;
   async function refresh() {
-    const [c, j, p] = await Promise.all([
+    const [c, j, p, l] = await Promise.all([
       api<Capabilities>("/capabilities"),
       api<Job[]>("/jobs"),
       api<Profile[]>("/profiles"),
+      api<LogEntry[]>("/logs"),
     ]);
     setCaps(c);
     setJobs(j);
     setProfiles(p);
+    setLogList(l);
     setSelected((old) => old || j[0]?.id || "");
   }
   useEffect(() => {
@@ -910,13 +1141,13 @@ function App() {
                             ↓ {v.name} <small>{bytes(v.size)}</small>
                           </a>
                         ))}
-                        <a
-                          href={`/api/jobs/${f.id}/config`}
-                          target="_blank"
-                          rel="noreferrer"
+                        <button
+                          type="button"
+                          className="quiet"
+                          onClick={() => viewConfig(f)}
                         >
-                          config.ini ↗
-                        </a>
+                          config.ini
+                        </button>
                         <button
                           className="quiet"
                           disabled={busy}
@@ -1084,14 +1315,14 @@ function App() {
                 )}
                 {job.state === "succeeded" && (
                   <div className="artifacts">
-                    <a
-                      href={`/api/jobs/${job.id}/config`}
-                      target="_blank"
-                      rel="noreferrer"
+                    <button
+                      type="button"
+                      className="artifact-open"
+                      onClick={() => viewConfig(job)}
                     >
                       <span>⚙ config.ini</span>
                       <small>as built</small>
-                    </a>
+                    </button>
                   </div>
                 )}
                 <button
@@ -1147,10 +1378,61 @@ function App() {
             )}
           </div>
         </div>
+        <section className="panel logs-box">
+          <div className="panel-heading">
+            <div className="panel-heading-title">
+              <h2>Build logs</h2>
+              <span className="architecture">logs-build/</span>
+            </div>
+            <span className="count">
+              {logList.filter((l) => l.present).length}
+            </span>
+          </div>
+          {logList.filter((l) => l.present).length === 0 ? (
+            <p className="hint">
+              Every build writes its log here. They are kept when a build's
+              artifacts are reclaimed, and removed when the build is deleted.
+            </p>
+          ) : (
+            <div className="log-rows">
+              {logList
+                .filter((l) => l.present)
+                .map((l) => (
+                  <div className="log-row" key={l.id}>
+                    <button
+                      className="log-open"
+                      onClick={() => viewLog(l)}
+                    >
+                      <strong>{names[l.target] || l.target}</strong>
+                      <small>
+                        {l.user} · {date(l.created)} · {bytes(l.size)}
+                      </small>
+                    </button>
+                    <span className={`badge ${l.state}`}>{l.state}</span>
+                    <a
+                      href={`/api/jobs/${l.id}/log`}
+                      aria-label={`Download log for ${names[l.target] || l.target}`}
+                    >
+                      ↓
+                    </a>
+                    <button
+                      className="quiet"
+                      disabled={busy || !done(l.state)}
+                      aria-label={`Delete log for ${names[l.target] || l.target}`}
+                      onClick={() => removeLog(l)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+            </div>
+          )}
+        </section>
         <footer>
           LinuxConsole 2026{" "}
           <span>Builds continue when you close this page.</span>
         </footer>
+        <TextViewer view={viewing} onClose={() => setViewing(undefined)} />
         <ConfirmDialog ask={ask} onClose={() => setAsk(undefined)} />
       </main>
     </div>
