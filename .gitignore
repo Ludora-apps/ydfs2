@@ -1,1 +1,10 @@
 config.ini
+
+# Credentials. Real deployment secrets live in /etc/ydfs-web/*.env (mode 0600),
+# outside the repository -- see webui/deploy/HOST.md. Only the *.env.example
+# templates, which hold REPLACE_WITH_... placeholders, are ever tracked.
+*.env
+.env*
+.envrc
+!*.env.example
+!.env.example

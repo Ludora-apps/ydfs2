@@ -79,11 +79,25 @@ async function fixture(
           tag: "v2.12.1",
           container: "fixture",
           artifacts: [],
+          favorite: false,
         },
       ];
       return json(jobs[0], 202);
     }
+    if (path === "/api/jobs" && method === "DELETE") {
+      jobs = [];
+      return json({ ok: true });
+    }
+    if (path.startsWith("/api/jobs/") && method === "DELETE") {
+      jobs = [];
+      return json({ ok: true });
+    }
     if (path === "/api/jobs") return json(jobs);
+    if (path.endsWith("/favorite")) {
+      jobs[0].favorite = method === "POST";
+      return json(jobs[0]);
+    }
+    if (path.endsWith("/config")) return route.fulfill({ status: 200, contentType: "text/plain", body: "ARCH=x86_64\n" });
     if (path.endsWith("/cancel")) {
       jobs[0].state = "cancelled";
       return json(jobs[0]);
@@ -181,6 +195,62 @@ test("Flathub applications are selected into the build", async ({ page }) => {
   await page.getByRole("button", { name: "Queue build" }).click();
   await expect(page.getByText("succeeded", { exact: true })).toBeVisible();
   await expect(page.getByText("1 Flathub app(s)")).toBeVisible();
+});
+test("a succeeded build can be kept and released", async ({ page }) => {
+  await fixture(page);
+  await page.getByRole("button", { name: "Queue build" }).click();
+  await expect(page.getByText("succeeded", { exact: true })).toBeVisible();
+  const kept = page.getByRole("heading", { name: "Kept builds" });
+  await expect(kept).toBeHidden();
+  // Pin it: the separate box appears, offering the ISO and the archived config.
+  await page.getByRole("button", { name: "Keep", exact: false }).first().click();
+  await expect(kept).toBeVisible();
+  const box = page.locator("section.favorites");
+  await expect(box.getByRole("link", { name: /linuxconsole.iso/ })).toBeVisible();
+  await expect(box.getByRole("link", { name: /config.ini/ })).toBeVisible();
+  await expect(box.getByRole("button", { name: "Delete" })).toBeVisible();
+  // Releasing it empties the box again.
+  await box.getByRole("button", { name: "Release" }).click();
+  await expect(kept).toBeHidden();
+});
+test("destructive actions confirm in a modal, never a native dialog", async ({
+  page,
+}) => {
+  // A native confirm() would fire this and auto-dismiss; nothing must.
+  let native = 0;
+  page.on("dialog", (d) => {
+    native++;
+    d.dismiss();
+  });
+  await fixture(page);
+  await page.getByRole("button", { name: "Queue build" }).click();
+  await expect(page.getByText("succeeded", { exact: true })).toBeVisible();
+
+  const modal = page.getByRole("dialog");
+  await expect(modal).toBeHidden();
+  await page.getByRole("button", { name: "Delete build" }).click();
+  await expect(modal).toBeVisible();
+  await expect(modal).toContainText("logs, source snapshot, and artifacts");
+
+  // Escape dismisses, and the build survives.
+  await page.keyboard.press("Escape");
+  await expect(modal).toBeHidden();
+  await expect(page.getByText("succeeded", { exact: true })).toBeVisible();
+
+  // Cancel dismisses too, and holds focus for a destructive action.
+  await page.getByRole("button", { name: "Delete build" }).click();
+  await expect(modal).toBeVisible();
+  await expect(page.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(modal).toBeHidden();
+  await expect(page.getByText("succeeded", { exact: true })).toBeVisible();
+
+  // Confirming actually deletes.
+  await page.getByRole("button", { name: "Delete build" }).click();
+  await modal.getByRole("button", { name: "Delete build" }).click();
+  await expect(modal).toBeHidden();
+  await expect(page.getByText("Your first build starts here")).toBeVisible();
+  expect(native).toBe(0);
 });
 test("mobile layout has no horizontal overflow", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });

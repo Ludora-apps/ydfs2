@@ -136,6 +136,11 @@ func main() {
 	if !a.dev && len(a.users) == 0 {
 		log.Fatal("YDFS_ALLOWED_USERS must list allowed GitHub usernames")
 	}
+	// Apply retention once at startup, so a policy change (or builds made
+	// while the service was down) takes effect without waiting for a new build.
+	a.mu.Lock()
+	a.pruneLocked()
+	a.mu.Unlock()
 	done := make(chan struct{})
 	go func() { defer close(done); a.worker() }()
 	srv := &http.Server{Addr: net.JoinHostPort(*host, strconv.Itoa(*port)), Handler: a.handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32768}
@@ -206,6 +211,9 @@ func (a *App) handler() http.Handler {
 		respond(w, j)
 	})
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", a.cancel)
+	mux.HandleFunc("POST /api/jobs/{id}/favorite", a.setFavorite)
+	mux.HandleFunc("DELETE /api/jobs/{id}/favorite", a.setFavorite)
+	mux.HandleFunc("GET /api/jobs/{id}/config", a.downloadConfig)
 	mux.HandleFunc("DELETE /api/jobs/{id}", a.deleteJob)
 	mux.HandleFunc("GET /api/jobs/{id}/events", a.events)
 	mux.HandleFunc("GET /api/jobs/{id}/log", a.downloadLog)

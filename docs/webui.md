@@ -138,6 +138,16 @@ long time. Run it through the UI itself and verify the resulting ISO boots
 before distributing it; see `VALIDATION.md` for the last recorded smoke run
 and its SHA256-verified artifact download.
 
+## Keeping build artifacts
+
+Artifacts are on a rolling window of 3, counted separately for ISOs and for
+component builds. When a build ages out, only its artifacts are deleted — an
+ISO is ~3.3 GB against ~70 MB for the rest of a job directory — so the build
+stays listed with its log and its `config.ini` still readable. A build can be
+pinned ("Keep"), which exempts its artifacts permanently and lists it in the
+separate **Kept builds** box, where it can be downloaded, released or deleted
+and its configuration read. Releasing it makes it eligible again immediately.
+
 ## Pre-installing Flathub applications
 
 The build form carries a **Flathub applications** box for ISO targets: the

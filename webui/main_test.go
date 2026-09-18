@@ -286,6 +286,151 @@ func TestFlathubSubmission(t *testing.T) {
 		t.Fatal("empty selection rewrote the list", e, string(b))
 	}
 }
+
+// saveArtifactJob creates a succeeded build whose artifact really exists on
+// disk, alongside the config.ini and build.log retention must not touch.
+func saveArtifactJob(t *testing.T, a *App, id, target, artifact string) *Job {
+	t.Helper()
+	j := &Job{ID: id, State: "succeeded", User: "alice", Settings: Settings{Target: target, Flatpaks: []string{}}, Created: now(), Artifacts: []Artifact{{artifact, 4}}}
+	putFile(t, filepath.Join(a.dir(j), "output", artifact), "iso!")
+	putFile(t, filepath.Join(a.dir(j), "output", "config.ini"), "ARCH=x86_64\n")
+	putFile(t, filepath.Join(a.dir(j), "build.log"), "compiling\n")
+	if e := a.saveJob(j); e != nil {
+		t.Fatal(e)
+	}
+	return j
+}
+func artifactExists(t *testing.T, a *App, id, name string) bool {
+	t.Helper()
+	_, e := os.Stat(filepath.Join(a.data, "jobs", id, "output", name))
+	return e == nil
+}
+func TestRetentionKeepsLastThreeOfEachClass(t *testing.T) {
+	a := testApp(t)
+	// Ids sort chronologically, which is the order jobs() returns them in.
+	for _, n := range []string{"1", "2", "3", "4", "5"} {
+		saveArtifactJob(t, a, "2026010"+n, "fast-iso", "linuxconsole.iso")
+		saveArtifactJob(t, a, "2026020"+n, "mate", "mate-x86_64.squashfs")
+	}
+	a.mu.Lock()
+	a.pruneLocked()
+	a.mu.Unlock()
+	for _, tt := range []struct {
+		id, name string
+		kept     bool
+	}{
+		{"20260105", "linuxconsole.iso", true}, {"20260104", "linuxconsole.iso", true},
+		{"20260103", "linuxconsole.iso", true}, {"20260102", "linuxconsole.iso", false},
+		{"20260101", "linuxconsole.iso", false},
+		// A separate window, so five ISO builds never evict the components.
+		{"20260205", "mate-x86_64.squashfs", true}, {"20260204", "mate-x86_64.squashfs", true},
+		{"20260203", "mate-x86_64.squashfs", true}, {"20260202", "mate-x86_64.squashfs", false},
+		{"20260201", "mate-x86_64.squashfs", false},
+	} {
+		if got := artifactExists(t, a, tt.id, tt.name); got != tt.kept {
+			t.Fatalf("%s: artifact present=%v, want %v", tt.id, got, tt.kept)
+		}
+		j, e := a.job(tt.id)
+		if e != nil {
+			t.Fatalf("%s: retention deleted the build record: %v", tt.id, e)
+		}
+		if tt.kept && (j.PrunedAt != "" || len(j.Artifacts) != 1) {
+			t.Fatalf("%s: wrongly marked pruned: %+v", tt.id, j)
+		}
+		if !tt.kept && (j.PrunedAt == "" || len(j.Artifacts) != 0) {
+			t.Fatalf("%s: not marked pruned: %+v", tt.id, j)
+		}
+		// The cheap, useful parts of a build always survive.
+		for _, keep := range []string{filepath.Join("output", "config.ini"), "build.log"} {
+			if _, e := os.Stat(filepath.Join(a.data, "jobs", tt.id, keep)); e != nil {
+				t.Fatalf("%s: retention removed %s", tt.id, keep)
+			}
+		}
+	}
+}
+func TestRetentionPinsFavorites(t *testing.T) {
+	a := testApp(t)
+	for _, n := range []string{"1", "2", "3", "4", "5"} {
+		saveArtifactJob(t, a, "2026010"+n, "fast-iso", "linuxconsole.iso")
+	}
+	// Star the oldest, which is well outside the window.
+	if w := request(a, "POST", "/api/jobs/20260101/favorite", ""); w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	a.mu.Lock()
+	a.pruneLocked()
+	a.mu.Unlock()
+	if !artifactExists(t, a, "20260101", "linuxconsole.iso") {
+		t.Fatal("a favourite was reclaimed")
+	}
+	// An aged-out favourite must not consume a slot from the rolling window.
+	for _, id := range []string{"20260105", "20260104", "20260103"} {
+		if !artifactExists(t, a, id, "linuxconsole.iso") {
+			t.Fatalf("%s: favourite shrank the window", id)
+		}
+	}
+	if artifactExists(t, a, "20260102", "linuxconsole.iso") {
+		t.Fatal("20260102 should have been reclaimed")
+	}
+	// Releasing it makes it eligible immediately.
+	if w := request(a, "DELETE", "/api/jobs/20260101/favorite", ""); w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if artifactExists(t, a, "20260101", "linuxconsole.iso") {
+		t.Fatal("releasing a favourite did not reclaim it")
+	}
+	// And a build whose artifacts are gone cannot be pinned after the fact.
+	if w := request(a, "POST", "/api/jobs/20260101/favorite", ""); w.Code != 409 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+}
+func TestRetentionIgnoresUnfinishedAndFailedBuilds(t *testing.T) {
+	a := testApp(t)
+	for _, n := range []string{"1", "2", "3", "4"} {
+		saveArtifactJob(t, a, "2026010"+n, "fast-iso", "linuxconsole.iso")
+	}
+	// A running build must never be touched, whatever its age.
+	running := &Job{ID: "20250101", State: "running", User: "alice", Settings: Settings{Target: "fast-iso"}, Created: now(), Artifacts: []Artifact{{"linuxconsole.iso", 4}}}
+	putFile(t, filepath.Join(a.dir(running), "output", "linuxconsole.iso"), "iso!")
+	if e := a.saveJob(running); e != nil {
+		t.Fatal(e)
+	}
+	a.mu.Lock()
+	a.pruneLocked()
+	a.mu.Unlock()
+	if !artifactExists(t, a, "20250101", "linuxconsole.iso") {
+		t.Fatal("retention touched a build that is still running")
+	}
+	if j, _ := a.job("20250101"); j.PrunedAt != "" {
+		t.Fatal("running build marked pruned")
+	}
+	// Running builds do not consume a window slot either.
+	if !artifactExists(t, a, "20260102", "linuxconsole.iso") {
+		t.Fatal("a non-succeeded build consumed a retention slot")
+	}
+}
+func TestArchivedConfigIsReadable(t *testing.T) {
+	a := testApp(t)
+	saveArtifactJob(t, a, "20260101", "fast-iso", "linuxconsole.iso")
+	w := request(a, "GET", "/api/jobs/20260101/config", "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "ARCH=x86_64") {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	// Still readable once the ISO itself has been reclaimed.
+	j, _ := a.job("20260101")
+	a.mu.Lock()
+	if e := a.pruneArtifacts(j); e != nil {
+		t.Fatal(e)
+	}
+	a.mu.Unlock()
+	w = request(a, "GET", "/api/jobs/20260101/config", "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "ARCH=x86_64") {
+		t.Fatal("configuration lost with the artifact:", w.Code, w.Body.String())
+	}
+	if w := request(a, "GET", "/api/jobs/missing/config", ""); w.Code != 404 {
+		t.Fatal(w.Code)
+	}
+}
 func TestAuthenticationAndCSRF(t *testing.T) {
 	a := testApp(t)
 	tests := []struct {

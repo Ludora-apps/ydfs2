@@ -433,6 +433,9 @@ func (a *App) finish(j *Job, state string, code *int, msg string) {
 	if e = a.saveJob(latest); e != nil {
 		fmt.Fprintln(os.Stderr, "saving build result:", e)
 	}
+	// A new artifact just landed: reclaim whatever fell out of the window.
+	// a.mu is held above, which is what pruneLocked requires.
+	a.pruneLocked()
 }
 func (a *App) run(j *Job) {
 	ctx, c := context.WithTimeout(a.ctx, 10*time.Second)

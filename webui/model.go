@@ -44,6 +44,11 @@ type Job struct {
 	ExitCode  *int       `json:"exitCode,omitempty"`
 	Error     string     `json:"error,omitempty"`
 	Artifacts []Artifact `json:"artifacts"`
+	// Favourite builds are pinned: retention never reclaims their artifacts.
+	Favorite bool `json:"favorite"`
+	// Set when retention deleted this build's artifacts. The build record,
+	// its log and its config.ini are kept, so the history stays readable.
+	PrunedAt string `json:"prunedAt,omitempty"`
 }
 
 var targets = []string{"fast-iso", "full-iso", "kernel", "busybox", "initramfs", "updates", "mate", "kde", "cinnamon"}

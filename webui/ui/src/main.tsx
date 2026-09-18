@@ -33,6 +33,8 @@ type Job = {
   exitCode?: number;
   error?: string;
   artifacts: Artifact[];
+  favorite: boolean;
+  prunedAt?: string;
 };
 type Profile = { name: string; settings: Settings };
 type Commit = {
@@ -88,6 +90,8 @@ const blankSettings: Settings = {
   flatpaks: [],
 };
 const isIso = (t: string) => t === "fast-iso" || t === "full-iso";
+// Mirrors keepBuilds in retention.go; used only in explanatory copy.
+const keepBuilds = 3;
 const done = (s: string) => ["succeeded", "failed", "cancelled"].includes(s);
 const bytes = (n: number) =>
   n >= 2 ** 30
@@ -113,6 +117,79 @@ const commitCard = (label: string, c?: Commit, note?: React.ReactNode) => (
     )}
   </div>
 );
+type Confirmation = {
+  title: string;
+  body: string;
+  confirm: string;
+  danger?: boolean;
+  onConfirm: () => void;
+};
+
+// The app never uses window.confirm/alert: a native dialog cannot be themed,
+// and blocks the whole page. <dialog> gives the focus trap, Escape handling and
+// backdrop for free, while staying styled like the rest of the UI.
+function ConfirmDialog({
+  ask,
+  onClose,
+}: {
+  ask?: Confirmation;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const d = ref.current;
+    if (!d) return;
+    if (ask && !d.open) d.showModal();
+    else if (!ask && d.open) d.close();
+  }, [ask]);
+  return (
+    <dialog
+      className="modal"
+      ref={ref}
+      aria-labelledby="confirm-title"
+      aria-describedby="confirm-body"
+      // Escape must not close it natively, or React state would still hold the
+      // request and the effect above would immediately reopen it.
+      onCancel={(e) => {
+        e.preventDefault();
+        onClose();
+      }}
+      // A click landing on the element itself is a click on the backdrop.
+      onClick={(e) => {
+        if (e.target === ref.current) onClose();
+      }}
+    >
+      {ask && (
+        <div className="modal-body">
+          <h2 id="confirm-title">{ask.title}</h2>
+          <p id="confirm-body">{ask.body}</p>
+          <div className="modal-actions">
+            <button
+              type="button"
+              className="quiet"
+              onClick={onClose}
+              // For a destructive action the safe choice takes focus.
+              autoFocus={ask.danger}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className={ask.danger ? "danger" : "primary"}
+              autoFocus={!ask.danger}
+              onClick={() => {
+                ask.onConfirm();
+                onClose();
+              }}
+            >
+              {ask.confirm}
+            </button>
+          </div>
+        </div>
+      )}
+    </dialog>
+  );
+}
 async function api<T>(
   path: string,
   method = "GET",
@@ -135,6 +212,7 @@ async function api<T>(
   return res.json();
 }
 function App() {
+  const [ask, setAsk] = useState<Confirmation | undefined>();
   const [theme, setTheme] = useState<"light" | "dark">(() =>
     document.documentElement.dataset.theme === "light" ? "light" : "dark",
   );
@@ -170,15 +248,18 @@ function App() {
       if (check) setRepoBusy("");
     }
   }
-  async function updateRepo() {
-    if (
-      !window.confirm(
-        repo && !repo.fastForward
-          ? "Merge the latest upstream commit into this checkout? Local commits are kept; a conflicting merge is rolled back. Queued and running builds keep the snapshot they were submitted with."
-          : "Fast-forward this checkout to the latest upstream commit? Queued and running builds keep the snapshot they were submitted with.",
-      )
-    )
-      return;
+  function updateRepo() {
+    const merging = !!repo && !repo.fastForward;
+    setAsk({
+      title: merging ? "Merge upstream changes?" : "Update this checkout?",
+      body: merging
+        ? "The latest upstream commit is merged into this checkout. Local commits are kept; a conflicting merge is rolled back. Queued and running builds keep the snapshot they were submitted with."
+        : "This checkout fast-forwards to the latest upstream commit. Queued and running builds keep the snapshot they were submitted with.",
+      confirm: merging ? "Merge" : "Update",
+      onConfirm: runUpdateRepo,
+    });
+  }
+  async function runUpdateRepo() {
     setRepoBusy("update");
     setRepoError("");
     try {
@@ -260,6 +341,30 @@ function App() {
   const [streamState, setStreamState] = useState("");
   const terminal = useRef<HTMLDivElement>(null);
   const job = jobs.find((j) => j.id === selected);
+  const favorites = jobs.filter((j) => j.favorite);
+  function toggleFavorite(j: Job) {
+    action(async () => {
+      await api(`/jobs/${j.id}/favorite`, j.favorite ? "DELETE" : "POST");
+      setNotice(
+        j.favorite
+          ? "Build released; it can now be reclaimed."
+          : "Build kept: its files are safe from cleanup.",
+      );
+    });
+  }
+  function removeBuild(j: Job) {
+    setAsk({
+      title: "Delete this build?",
+      body: "Its logs, source snapshot, and artifacts are deleted with it. This cannot be undone.",
+      confirm: "Delete build",
+      danger: true,
+      onConfirm: () =>
+        action(async () => {
+          await api(`/jobs/${j.id}`, "DELETE");
+          setSelected((old) => (old === j.id ? "" : old));
+        }),
+    });
+  }
   const active = jobs.find((j) => !done(j.state) && j.state !== "queued");
   const queued = jobs.filter((j) => j.state === "queued").length;
   async function refresh() {
@@ -772,6 +877,66 @@ function App() {
                 <small>One build at a time · shared cache</small>
               </div>
             </div>
+            {favorites.length > 0 && (
+              <section className="panel favorites">
+                <div className="panel-heading">
+                  <div className="panel-heading-title">
+                    <h2>Kept builds</h2>
+                    <span className="architecture">never cleaned up</span>
+                  </div>
+                  <span className="count">{favorites.length}</span>
+                </div>
+                <div className="fav-list">
+                  {favorites.map((f) => (
+                    <div className="fav" key={f.id}>
+                      <div className="fav-head">
+                        <button
+                          className="fav-title"
+                          onClick={() => setSelected(f.id)}
+                        >
+                          {names[f.settings.target] || f.settings.target}
+                        </button>
+                        <small>
+                          {date(f.created)} · {f.revision.slice(0, 12)} ·{" "}
+                          {f.tag || "untagged"}
+                        </small>
+                      </div>
+                      <div className="fav-actions">
+                        {f.artifacts.map((v) => (
+                          <a
+                            key={v.name}
+                            href={`/api/jobs/${f.id}/artifacts/${encodeURIComponent(v.name)}`}
+                          >
+                            ↓ {v.name} <small>{bytes(v.size)}</small>
+                          </a>
+                        ))}
+                        <a
+                          href={`/api/jobs/${f.id}/config`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          config.ini ↗
+                        </a>
+                        <button
+                          className="quiet"
+                          disabled={busy}
+                          onClick={() => toggleFavorite(f)}
+                        >
+                          Release
+                        </button>
+                        <button
+                          className="quiet"
+                          disabled={busy}
+                          onClick={() => removeBuild(f)}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
             <section className="panel history">
               <div className="panel-heading">
                 <h2>Build activity</h2>
@@ -810,6 +975,11 @@ function App() {
                           {j.user} · {date(j.created)}
                         </small>
                       </span>
+                      {j.favorite && (
+                        <span className="pin" title="Kept build">
+                          ★
+                        </span>
+                      )}
                       <span className={`badge ${j.state}`}>{j.state}</span>
                     </button>
                   ))}
@@ -838,23 +1008,25 @@ function App() {
                         : "Cancel build"}
                     </button>
                   ) : (
-                    <button
-                      className="quiet"
-                      disabled={busy}
-                      onClick={() => {
-                        if (
-                          window.confirm(
-                            "Delete this build, its logs, source snapshot, and artifacts?",
-                          )
-                        )
-                          action(async () => {
-                            await api(`/jobs/${job.id}`, "DELETE");
-                            setSelected("");
-                          });
-                      }}
-                    >
-                      Delete build
-                    </button>
+                    <div className="detail-actions">
+                      {job.state === "succeeded" && !job.prunedAt && (
+                        <button
+                          className="quiet"
+                          disabled={busy}
+                          aria-pressed={job.favorite}
+                          onClick={() => toggleFavorite(job)}
+                        >
+                          {job.favorite ? "★ Kept" : "☆ Keep"}
+                        </button>
+                      )}
+                      <button
+                        className="quiet"
+                        disabled={busy}
+                        onClick={() => removeBuild(job)}
+                      >
+                        Delete build
+                      </button>
+                    </div>
                   )}
                 </div>
                 <dl>
@@ -900,6 +1072,26 @@ function App() {
                         <small>{bytes(f.size)}</small>
                       </a>
                     ))}
+                  </div>
+                )}
+                {job.prunedAt && (
+                  <p className="hint reclaimed">
+                    Files removed {date(job.prunedAt)} to make room: only the
+                    {` ${keepBuilds} `}most recent builds of each kind keep
+                    theirs. The log and configuration below are still here. Use
+                    “Keep” on a build to pin its files permanently.
+                  </p>
+                )}
+                {job.state === "succeeded" && (
+                  <div className="artifacts">
+                    <a
+                      href={`/api/jobs/${job.id}/config`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <span>⚙ config.ini</span>
+                      <small>as built</small>
+                    </a>
                   </div>
                 )}
                 <button
@@ -959,6 +1151,7 @@ function App() {
           LinuxConsole 2026{" "}
           <span>Builds continue when you close this page.</span>
         </footer>
+        <ConfirmDialog ask={ask} onClose={() => setAsk(undefined)} />
       </main>
     </div>
   );
