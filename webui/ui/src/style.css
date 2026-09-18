@@ -748,3 +748,84 @@ footer {
     gap: 12px;
   }
 }
+
+.repository .panel-heading {
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.repo-actions {
+  display: flex;
+  gap: 8px;
+}
+.repo-actions .update {
+  border: 0;
+  border-radius: 7px;
+  padding: 9px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  background: #198267;
+  color: #fff;
+}
+.repo-actions .update:hover:enabled {
+  background: #126b55;
+}
+.commits {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.commit {
+  border: 1px solid var(--subtle-border);
+  background: var(--input);
+  border-radius: 9px;
+  padding: 14px 16px;
+  min-width: 0;
+}
+.commit .eyebrow {
+  margin-bottom: 8px;
+}
+.commit strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.commit p {
+  margin: 7px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.commit code {
+  font:
+    11px ui-monospace,
+    SFMono-Regular,
+    Consolas,
+    monospace;
+  color: var(--accent-text);
+}
+.commit small {
+  display: block;
+  margin-top: 5px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.commit .pending {
+  margin-top: 0;
+}
+.repo-status {
+  margin: 16px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.repo-status.error {
+  color: var(--danger-text);
+}
+@media (max-width: 740px) {
+  .commits {
+    grid-template-columns: 1fr;
+  }
+}

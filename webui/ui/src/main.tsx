@@ -27,6 +27,24 @@ type Job = {
   artifacts: Artifact[];
 };
 type Profile = { name: string; settings: Settings };
+type Commit = {
+  revision: string;
+  subject: string;
+  author: string;
+  date: string;
+};
+type Repository = {
+  url: string;
+  branch: string;
+  tag: string;
+  dirty: boolean;
+  local: Commit;
+  upstream?: Commit;
+  ahead: number;
+  behind: number;
+  fastForward: boolean;
+  checkedAt?: string;
+};
 type Capabilities = {
   targets: string[];
   packageLists: string[];
@@ -57,6 +75,25 @@ const bytes = (n: number) =>
     ? `${(n / 2 ** 30).toFixed(1)} GB`
     : `${(n / 2 ** 20).toFixed(1)} MB`;
 const date = (s?: string) => (s ? new Date(s).toLocaleString() : "—");
+const commitCard = (label: string, c?: Commit, note?: React.ReactNode) => (
+  <div className="commit">
+    <p className="eyebrow">{label}</p>
+    {c ? (
+      <>
+        <strong title={c.subject}>{c.subject}</strong>
+        <p>
+          <code>{c.revision.slice(0, 12)}</code> · {date(c.date)}
+        </p>
+        <small>
+          {c.author}
+          {note}
+        </small>
+      </>
+    ) : (
+      <p className="pending">Not checked yet.</p>
+    )}
+  </div>
+);
 async function api<T>(
   path: string,
   method = "GET",
@@ -96,6 +133,46 @@ function App() {
   const [caps, setCaps] = useState<Capabilities>();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [repo, setRepo] = useState<Repository>();
+  const [repoBusy, setRepoBusy] = useState("");
+  const [repoError, setRepoError] = useState("");
+  async function loadRepo(check: boolean) {
+    setRepoError("");
+    if (check) setRepoBusy("check");
+    try {
+      setRepo(
+        check
+          ? await api<Repository>("/repository/check", "POST", {})
+          : await api<Repository>("/repository"),
+      );
+    } catch (e) {
+      setRepoError((e as Error).message);
+    } finally {
+      if (check) setRepoBusy("");
+    }
+  }
+  async function updateRepo() {
+    if (
+      !window.confirm(
+        repo && !repo.fastForward
+          ? "Merge the latest upstream commit into this checkout? Local commits are kept; a conflicting merge is rolled back. Queued and running builds keep the snapshot they were submitted with."
+          : "Fast-forward this checkout to the latest upstream commit? Queued and running builds keep the snapshot they were submitted with.",
+      )
+    )
+      return;
+    setRepoBusy("update");
+    setRepoError("");
+    try {
+      const r = await api<Repository>("/repository/update", "POST", {});
+      setRepo(r);
+      setNotice(`Checkout updated to ${r.local.revision.slice(0, 12)}.`);
+      await refresh();
+    } catch (e) {
+      setRepoError((e as Error).message);
+    } finally {
+      setRepoBusy("");
+    }
+  }
   const [settings, setSettings] = useState<Settings>({
     target: "fast-iso",
     verbose: true,
@@ -170,6 +247,17 @@ function App() {
     return () => {
       mounted = false;
       clearInterval(t);
+    };
+  }, []);
+  useEffect(() => {
+    let mounted = true;
+    // The local commit is cheap; the upstream check reaches GitHub, so it
+    // follows separately instead of holding up the first paint.
+    loadRepo(false).then(() => {
+      if (mounted) loadRepo(true);
+    });
+    return () => {
+      mounted = false;
     };
   }, []);
   useEffect(() => {
@@ -274,6 +362,73 @@ function App() {
         </div>
       </header>
       <main>
+        <section className="panel repository">
+          <div className="panel-heading">
+            <div className="panel-heading-title">
+              <h2>Repository</h2>
+              {repo && (
+                <span className="architecture">
+                  {repo.branch}
+                  {repo.tag && ` · ${repo.tag}`}
+                </span>
+              )}
+            </div>
+            <div className="repo-actions">
+              <button
+                type="button"
+                className="quiet"
+                disabled={!!repoBusy}
+                onClick={() => loadRepo(true)}
+              >
+                {repoBusy === "check" ? "Checking…" : "↻ Check upstream"}
+              </button>
+              <button
+                type="button"
+                className="update"
+                disabled={
+                  !!repoBusy ||
+                  !repo?.upstream ||
+                  repo.behind === 0 ||
+                  repo.dirty
+                }
+                onClick={updateRepo}
+              >
+                {repoBusy === "update"
+                  ? "Updating…"
+                  : repo && repo.behind > 0
+                    ? `↓ Update (${repo.behind})`
+                    : "Up to date"}
+              </button>
+            </div>
+          </div>
+          <div className="commits">
+            {commitCard(
+              "THIS CHECKOUT",
+              repo?.local,
+              repo?.dirty ? " · uncommitted changes" : undefined,
+            )}
+            {commitCard(
+              "UPSTREAM · LINUXCONSOLE-ORG/YDFS2",
+              repo?.upstream,
+              repo?.checkedAt ? ` · checked ${date(repo.checkedAt)}` : undefined,
+            )}
+          </div>
+          <p className={`repo-status ${repoError ? "error" : ""}`}>
+            {repoError ||
+              (!repo
+                ? "Reading the checkout…"
+                : !repo.upstream
+                  ? "Check upstream to compare this checkout with GitHub."
+                  : repo.dirty
+                    ? "The checkout has uncommitted changes; commit or discard them before updating."
+                    : repo.behind === 0
+                      ? `Up to date with ${repo.branch} on GitHub.${repo.ahead > 0 ? ` ${repo.ahead} local commit(s) ahead.` : ""}`
+                      : `${repo.behind} new commit(s) available on ${repo.branch}.${repo.ahead > 0 ? ` Updating merges them into your ${repo.ahead} local commit(s).` : ""} Only builds queued afterwards are affected.`)}{" "}
+            <a href={repo?.url || "https://github.com/linuxconsole-org/ydfs2"} target="_blank" rel="noreferrer">
+              View on GitHub ↗
+            </a>
+          </p>
+        </section>
         {error && (
           <div className="alert" role="alert">
             {error}

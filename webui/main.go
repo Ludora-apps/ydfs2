@@ -33,6 +33,10 @@ type App struct {
 	dev                        bool
 	minFree                    uint64
 	mu                         sync.Mutex
+	repoMu                     sync.Mutex
+	upstreamFrom               string
+	upstream                   *Commit
+	upstreamAt                 time.Time
 	wake                       chan struct{}
 	ctx                        context.Context
 	docker                     string
@@ -154,6 +158,7 @@ func fail(w http.ResponseWriter, code int, s string) {
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(map[string]string{"error": s})
 }
+
 // Large enough for a job submission or profile carrying a full package-list
 // override (see maxPackageListTextLen), plus JSON overhead.
 const maxRequestBody = 512 * 1024
@@ -175,6 +180,9 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 func (a *App) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/capabilities", a.capabilities)
+	mux.HandleFunc("GET /api/repository", a.repository)
+	mux.HandleFunc("POST /api/repository/check", a.repositoryCheck)
+	mux.HandleFunc("POST /api/repository/update", a.repositoryUpdate)
 	mux.HandleFunc("GET /api/jobs", func(w http.ResponseWriter, r *http.Request) {
 		js, e := a.jobs()
 		if e != nil {

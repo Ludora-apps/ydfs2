@@ -417,3 +417,81 @@ func TestCancelDuringContainerPreparation(t *testing.T) {
 		t.Fatal("compose process group did not stop promptly")
 	}
 }
+func gitFixture(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+	if out, e := cmd.CombinedOutput(); e != nil {
+		t.Fatalf("git %v: %v\n%s", args, e, out)
+	}
+}
+func TestRepositoryUpdate(t *testing.T) {
+	a := testApp(t)
+	origin := t.TempDir()
+	gitFixture(t, origin, "init", "-b", defaultBranch)
+	putFile(t, filepath.Join(origin, "2.12", "Makefile"), "all:\n")
+	gitFixture(t, origin, "add", ".")
+	gitFixture(t, origin, "commit", "-m", "first")
+	gitFixture(t, t.TempDir(), "clone", origin, a.repo)
+	putFile(t, filepath.Join(origin, "2.12", "Makefile"), "all:\n\t@true\n")
+	gitFixture(t, origin, "commit", "-am", "second commit")
+	a.upstreamFrom = origin
+	first, e := a.commit(context.Background(), "HEAD")
+	if e != nil {
+		t.Fatal(e)
+	}
+	// Before any check the box shows the checkout alone, with no network hit.
+	var s Repository
+	if w := request(a, "GET", "/api/repository", ""); w.Code != 200 {
+		t.Fatalf("state: %d %s", w.Code, w.Body)
+	} else if json.Unmarshal(w.Body.Bytes(), &s); s.Local.Revision != first.Revision || s.Upstream != nil {
+		t.Fatalf("unexpected state %+v", s)
+	}
+	if w := request(a, "POST", "/api/repository/check", ""); w.Code != 200 {
+		t.Fatalf("check: %d %s", w.Code, w.Body)
+	} else if json.Unmarshal(w.Body.Bytes(), &s); s.Behind != 1 || s.Ahead != 0 || !s.FastForward || s.Upstream.Subject != "second commit" {
+		t.Fatalf("unexpected comparison %+v", s)
+	}
+	// A dirty checkout must not be merged over.
+	putFile(t, filepath.Join(a.repo, "2.12", "Makefile"), "dirty\n")
+	if w := request(a, "POST", "/api/repository/update", ""); w.Code != 409 {
+		t.Fatalf("dirty update: %d %s", w.Code, w.Body)
+	}
+	gitFixture(t, a.repo, "checkout", "--", ".")
+	if w := request(a, "POST", "/api/repository/update", ""); w.Code != 200 {
+		t.Fatalf("update: %d %s", w.Code, w.Body)
+	} else if json.Unmarshal(w.Body.Bytes(), &s); s.Behind != 0 || s.Local.Subject != "second commit" || s.Dirty {
+		t.Fatalf("unexpected state after update %+v", s)
+	}
+	// A fork carrying its own commits is permanently diverged: the update must
+	// merge instead of refusing, and must keep the local work.
+	putFile(t, filepath.Join(a.repo, "webui", "local.txt"), "fork\n")
+	gitFixture(t, a.repo, "add", ".")
+	gitFixture(t, a.repo, "commit", "-m", "fork commit")
+	putFile(t, filepath.Join(origin, "2.12", "packages", "list-x86_64"), "pkg\n")
+	gitFixture(t, origin, "add", ".")
+	gitFixture(t, origin, "commit", "-m", "third commit")
+	if w := request(a, "POST", "/api/repository/update", ""); w.Code != 200 {
+		t.Fatalf("merge update: %d %s", w.Code, w.Body)
+	} else if json.Unmarshal(w.Body.Bytes(), &s); s.Behind != 0 || s.Ahead != 2 {
+		t.Fatalf("unexpected state after merge %+v", s)
+	}
+	for _, f := range []string{"webui/local.txt", "2.12/packages/list-x86_64"} {
+		if _, e := os.Stat(filepath.Join(a.repo, f)); e != nil {
+			t.Fatalf("%s missing after merge: %v", f, e)
+		}
+	}
+	// A conflicting upstream change is rolled back, leaving a usable checkout.
+	putFile(t, filepath.Join(a.repo, "shared.txt"), "ours\n")
+	gitFixture(t, a.repo, "add", ".")
+	gitFixture(t, a.repo, "commit", "-m", "ours")
+	putFile(t, filepath.Join(origin, "shared.txt"), "theirs\n")
+	gitFixture(t, origin, "add", ".")
+	gitFixture(t, origin, "commit", "-m", "theirs")
+	if w := request(a, "POST", "/api/repository/update", ""); w.Code != 409 || !strings.Contains(w.Body.String(), "shared.txt") {
+		t.Fatalf("conflicting update: %d %s", w.Code, w.Body)
+	}
+	if out, e := a.git(context.Background(), "status", "--porcelain"); e != nil || out != "" {
+		t.Fatalf("checkout left dirty after conflict: %q %v", out, e)
+	}
+}
