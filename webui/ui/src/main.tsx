@@ -9,6 +9,14 @@ type Settings = {
   configOverrides: string;
   packageList: string;
   packageListText: string;
+  flatpaks: string[];
+};
+type FlathubApp = { id: string; name: string; summary: string };
+type FlathubCatalogue = {
+  apps: FlathubApp[];
+  checkedAt?: string;
+  source: string;
+  error?: string;
 };
 type Artifact = { name: string; size: number };
 type Job = {
@@ -48,6 +56,7 @@ type Repository = {
 type Capabilities = {
   targets: string[];
   packageLists: string[];
+  flathub?: FlathubCatalogue;
   architecture: string;
   distribution: string;
   user: string;
@@ -69,6 +78,16 @@ const names: Record<string, string> = {
   kde: "KDE desktop",
   cinnamon: "Cinnamon desktop",
 };
+const blankSettings: Settings = {
+  target: "fast-iso",
+  verbose: true,
+  kernel: "",
+  configOverrides: "",
+  packageList: "",
+  packageListText: "",
+  flatpaks: [],
+};
+const isIso = (t: string) => t === "fast-iso" || t === "full-iso";
 const done = (s: string) => ["succeeded", "failed", "cancelled"].includes(s);
 const bytes = (n: number) =>
   n >= 2 ** 30
@@ -173,14 +192,32 @@ function App() {
       setRepoBusy("");
     }
   }
-  const [settings, setSettings] = useState<Settings>({
-    target: "fast-iso",
-    verbose: true,
-    kernel: "",
-    configOverrides: "",
-    packageList: "",
-    packageListText: "",
-  });
+  const [settings, setSettings] = useState<Settings>(blankSettings);
+  const [flathubBusy, setFlathubBusy] = useState(false);
+  const [flathubError, setFlathubError] = useState("");
+  function toggleApp(id: string, on: boolean) {
+    setSettings((s) => ({
+      ...s,
+      flatpaks: on
+        ? [...s.flatpaks, id]
+        : s.flatpaks.filter((x) => x !== id),
+    }));
+  }
+  async function refreshFlathub() {
+    setFlathubBusy(true);
+    setFlathubError("");
+    try {
+      const c = await api<FlathubCatalogue>("/flathub/refresh", "POST");
+      setFlathubError(c.error || "");
+      // The catalogue reaches the form through /api/capabilities.
+      await refresh();
+      if (!c.error) setNotice("Flathub list refreshed.");
+    } catch (e) {
+      setFlathubError((e as Error).message);
+    } finally {
+      setFlathubBusy(false);
+    }
+  }
   const [loadingList, setLoadingList] = useState(false);
   async function loadPackageList(name: string) {
     if (!name) {
@@ -580,6 +617,51 @@ function App() {
                     never modified.
                   </span>
                 </label>
+                {isIso(settings.target) && (
+                  <fieldset className="apps-field">
+                    <legend>
+                      Flathub applications{" "}
+                      <span className="optional">optional</span>
+                    </legend>
+                    <div className="apps">
+                      {(caps?.flathub?.apps || []).map((app) => (
+                        <label className="check" key={app.id}>
+                          <input
+                            type="checkbox"
+                            checked={settings.flatpaks.includes(app.id)}
+                            onChange={(e) =>
+                              toggleApp(app.id, e.target.checked)
+                            }
+                          />
+                          <span>
+                            {app.name}
+                            <small>{app.summary || app.id}</small>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                    <div className="apps-actions">
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={flathubBusy}
+                        onClick={refreshFlathub}
+                      >
+                        {flathubBusy ? "Refreshing…" : "Refresh from Flathub"}
+                      </button>
+                      <small>
+                        {settings.flatpaks.length} selected
+                        {caps?.flathub?.checkedAt
+                          ? ` · updated ${date(caps.flathub.checkedAt)}`
+                          : " · built-in list"}
+                      </small>
+                    </div>
+                    <span className={`hint ${flathubError ? "error" : ""}`}>
+                      {flathubError ||
+                        "Downloaded during the build and baked into the ISO, so they work with no network on first boot. Each application adds hundreds of megabytes to several gigabytes once its runtime is counted."}
+                    </span>
+                  </fieldset>
+                )}
                 <div className="config-summary">
                   <span>
                     Distribution<strong>linuxconsole</strong>
@@ -610,7 +692,11 @@ function App() {
                   <div key={p.name}>
                     <button
                       onClick={() => {
-                        setSettings(p.settings);
+                        setSettings({
+                          ...blankSettings,
+                          ...p.settings,
+                          flatpaks: p.settings.flatpaks ?? [],
+                        });
                         setProfileName(p.name);
                         setNotice(`Loaded profile “${p.name}”.`);
                       }}
@@ -786,6 +872,8 @@ function App() {
                       {job.settings.configOverrides && " · config overrides"}
                       {job.settings.packageList &&
                         ` · package list: ${job.settings.packageList}`}
+                      {(job.settings.flatpaks?.length ?? 0) > 0 &&
+                        ` · ${job.settings.flatpaks.length} Flathub app(s)`}
                     </dd>
                   </div>
                   <div>

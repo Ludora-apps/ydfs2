@@ -1,0 +1,18 @@
+# Flathub applications to pre-install into the generated ISO.
+#
+# One Flathub application ID per line; blank lines and lines starting with
+# "#" are ignored. When this list has at least one entry, "make iso" builds an
+# extra flatpak-$ARCH.squashfs module holding the applications and their
+# runtimes, and scripts/make_config_ini adds that module to MODULES= so
+# scripts/make_iso ships it. An empty list changes nothing.
+#
+# The applications are downloaded during the build, so they are present on the
+# ISO and work with no network on first boot. They are not small: each one adds
+# hundreds of megabytes to several gigabytes once its runtime is counted.
+#
+# The web build manager (webui/) rewrites this file inside its own private
+# per-job snapshot; editing it here only affects command-line "make" builds.
+#
+# Example:
+# com.github.tchx84.Flatseal
+# org.videolan.VLC

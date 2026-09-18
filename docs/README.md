@@ -11,6 +11,7 @@ works. It complements, but does not replace, the top-level [README.md](../README
 | [scripts-reference.md](scripts-reference.md) | Every script under `2.12/scripts/` and `2.12/Makefile-docker`, grouped by purpose |
 | [customization.md](customization.md) | `config.ini`, environment variables, package lists, kernel/toolchain options — how to build a custom distro variant |
 | [webui.md](webui.md) | The Go + React web build manager: architecture, tech stack, installation, deployment |
+| [flatpak-preinstall.md](flatpak-preinstall.md) | Baking Flathub applications into the generated ISO: design, files, validation, boot wiring, what is still unverified |
 
 ## Quick orientation
 

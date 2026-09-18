@@ -138,6 +138,15 @@ long time. Run it through the UI itself and verify the resulting ISO boots
 before distributing it; see `VALIDATION.md` for the last recorded smoke run
 and its SHA256-verified artifact download.
 
+## Pre-installing Flathub applications
+
+The build form carries a **Flathub applications** box for ISO targets: the
+twenty most popular Flathub applications, fetched live from Flathub and cached
+server-side. Ticked applications are downloaded during the build and baked into
+the ISO. The endpoints are `GET /api/flathub` (cached, no network call) and
+`POST /api/flathub/refresh`. See
+[flatpak-preinstall.md](flatpak-preinstall.md).
+
 ## API surface
 
 `GET /api/capabilities`, `GET/POST /api/jobs`, `GET/DELETE /api/jobs/{id}`,

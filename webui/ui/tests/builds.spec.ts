@@ -35,6 +35,30 @@ async function fixture(
         minFreeBytes: 10 * 2 ** 30,
         message: "",
         development: false,
+        flathub: {
+          source: "built-in",
+          apps: [
+            { id: "org.videolan.VLC", name: "VLC", summary: "Media player" },
+            {
+              id: "com.github.tchx84.Flatseal",
+              name: "Flatseal",
+              summary: "Manage Flatpak permissions",
+            },
+          ],
+        },
+      });
+    if (path === "/api/flathub/refresh")
+      return json({
+        source: "flathub",
+        checkedAt: "2026-09-05T12:00:00Z",
+        apps: [
+          { id: "org.videolan.VLC", name: "VLC", summary: "Media player" },
+          {
+            id: "com.github.tchx84.Flatseal",
+            name: "Flatseal",
+            summary: "Manage Flatpak permissions",
+          },
+        ],
       });
     if (path === "/api/profiles") {
       if (method === "PUT") {
@@ -141,6 +165,22 @@ test("failed builds show exit status and logs", async ({ page }) => {
   await expect(
     page.getByRole("link", { name: /linuxconsole.iso/ }),
   ).toHaveCount(0);
+});
+test("Flathub applications are selected into the build", async ({ page }) => {
+  await fixture(page);
+  const picker = page.getByRole("group", { name: "Flathub applications" });
+  await expect(picker).toBeVisible();
+  await expect(picker).toContainText("0 selected");
+  await page.getByRole("checkbox", { name: "VLC" }).check();
+  await expect(picker).toContainText("1 selected");
+  // Only an ISO can carry applications.
+  await page.getByLabel("Build target").selectOption("busybox");
+  await expect(picker).toBeHidden();
+  await page.getByLabel("Build target").selectOption("fast-iso");
+  await expect(page.getByRole("checkbox", { name: "VLC" })).toBeChecked();
+  await page.getByRole("button", { name: "Queue build" }).click();
+  await expect(page.getByText("succeeded", { exact: true })).toBeVisible();
+  await expect(page.getByText("1 Flathub app(s)")).toBeVisible();
 });
 test("mobile layout has no horizontal overflow", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });

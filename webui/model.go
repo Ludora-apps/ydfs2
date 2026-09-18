@@ -14,12 +14,13 @@ import (
 )
 
 type Settings struct {
-	Target          string `json:"target"`
-	Verbose         bool   `json:"verbose"`
-	Kernel          string `json:"kernel"`
-	ConfigOverrides string `json:"configOverrides"`
-	PackageList     string `json:"packageList"`
-	PackageListText string `json:"packageListText"`
+	Target          string   `json:"target"`
+	Verbose         bool     `json:"verbose"`
+	Kernel          string   `json:"kernel"`
+	ConfigOverrides string   `json:"configOverrides"`
+	PackageList     string   `json:"packageList"`
+	PackageListText string   `json:"packageListText"`
+	Flatpaks        []string `json:"flatpaks"`
 }
 type Profile struct {
 	Name     string   `json:"name"`
@@ -66,6 +67,16 @@ const maxPackageListTextLen = 400000
 // filepath.Base before any filesystem access.
 var packageListNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
 
+// A Flathub application ID, e.g. org.videolan.VLC. These end up as arguments to
+// flatpak in scripts/make_flatpak and as lines of data/flathub-apps, so nothing
+// but reverse-DNS characters is allowed: no spaces, slashes, dots leading a
+// component, or shell metacharacters.
+var flatpakIDPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+){1,8}$`)
+
+// Well above the twenty offered by the form, but a bound all the same: each
+// application is downloaded during the build and baked into the ISO.
+const maxFlatpakApps = 40
+
 func validateConfigOverrides(text string) error {
 	if len(text) > maxConfigOverridesLen {
 		return errors.New("config overrides are too long")
@@ -82,6 +93,31 @@ func validateConfigOverrides(text string) error {
 		if protectedConfigKeys[m[1]] {
 			return fmt.Errorf("config override key %s is managed by the build system and cannot be overridden", m[1])
 		}
+	}
+	return nil
+}
+
+// Membership in the catalogue is checked separately, by the App: like the
+// package list, a saved profile is allowed to outlive a catalogue refresh.
+func validateFlatpaks(s Settings) error {
+	if len(s.Flatpaks) == 0 {
+		return nil
+	}
+	if s.Target != "fast-iso" && s.Target != "full-iso" {
+		return errors.New("Flathub applications can only be pre-installed by a fast or full ISO build")
+	}
+	if len(s.Flatpaks) > maxFlatpakApps {
+		return fmt.Errorf("at most %d Flathub applications can be pre-installed", maxFlatpakApps)
+	}
+	seen := map[string]bool{}
+	for _, id := range s.Flatpaks {
+		if !flatpakIDPattern.MatchString(id) {
+			return fmt.Errorf("invalid Flathub application ID %q", id)
+		}
+		if seen[id] {
+			return fmt.Errorf("Flathub application %s is selected twice", id)
+		}
+		seen[id] = true
 	}
 	return nil
 }
@@ -103,6 +139,9 @@ func (s Settings) validate() error {
 	}
 	if (s.PackageList == "") != (s.PackageListText == "") {
 		return errors.New("packageList and packageListText must be supplied together")
+	}
+	if e := validateFlatpaks(s); e != nil {
+		return e
 	}
 	if s.PackageList != "" {
 		if !packageListNamePattern.MatchString(s.PackageList) || filepath.Base(s.PackageList) != s.PackageList {
@@ -146,6 +185,7 @@ func (a *App) job(id string) (*Job, error) {
 	}
 	var j Job
 	e := json.Unmarshal([]byte(b), &j)
+	j.Settings.normalize()
 	return &j, e
 }
 func (a *App) jobs() ([]Job, error) {
@@ -164,9 +204,19 @@ func (a *App) jobs() ([]Job, error) {
 		if e = json.Unmarshal([]byte(b), &j); e != nil {
 			return nil, e
 		}
+		j.Settings.normalize()
 		out = append(out, j)
 	}
 	return out, rows.Err()
+}
+
+// Rows written before Flatpak pre-installation existed have no such key, and a
+// nil slice marshals to null. Normalising on the way out keeps the API shape
+// stable for every reader, old row or new.
+func (s *Settings) normalize() {
+	if s.Flatpaks == nil {
+		s.Flatpaks = []string{}
+	}
 }
 func (a *App) dir(j *Job) string { return filepath.Join(a.data, "jobs", j.ID) }
 func terminal(s string) bool     { return s == "succeeded" || s == "failed" || s == "cancelled" }

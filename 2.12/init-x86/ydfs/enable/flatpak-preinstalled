@@ -1,0 +1,44 @@
+#!/bin/bash
+# Make the applications baked into flatpak-$ARCH.squashfs visible to Flatpak.
+#
+# scripts/make_flatpak downloads them at build time into a staging Flatpak
+# installation which scripts/make_module turns into that module, and
+# /ydfs/start/mountopt has already mounted it on /ydfs/modules/flatpak and
+# overlaid it read-write on $HOME_DIBAB/flatpak by the time this runs. All that
+# is left is telling Flatpak where to look.
+#
+# Sourced from /etc/init.d/rcS, so it must never exit: that would end the boot.
+# $HOME is not usable this early (busybox init leaves it at /), so use
+# $HOME_DIBAB from /etc/profile and $ARCH from /ydfs/detect/media.
+
+if [ -e /ydfs/modules/flatpak ]
+then
+  # Prefer the writable overlay so applications can still be added at runtime.
+  PREINSTALLED=$HOME_DIBAB/flatpak
+  [ ! -e $PREINSTALLED ] && PREINSTALLED=/ydfs/modules/flatpak
+
+  echo "Enable pre-installed Flatpak applications from $PREINSTALLED"
+
+  if [ -e /disk/flatpak.loop ]
+  then
+    # /ydfs/enable/flatpak-disk owns var/lib/flatpak in this case, so register
+    # the baked applications as a second, read-only installation beside it.
+    install -d /etc/flatpak/installations.d
+    echo '[Installation "preinstalled"]' >  /etc/flatpak/installations.d/preinstalled.conf
+    echo "Path=$PREINSTALLED"            >> /etc/flatpak/installations.d/preinstalled.conf
+    echo "DisplayName=Pre-installed applications" >> /etc/flatpak/installations.d/preinstalled.conf
+    echo "StorageType=harddisk"          >> /etc/flatpak/installations.d/preinstalled.conf
+    # /etc/profile only knows about var/lib/flatpak/exports, so add ours. Safe
+    # to append: /ydfs/start/mountopt has already rewritten this file.
+    echo 'export XDG_DATA_DIRS=$XDG_DATA_DIRS:'$PREINSTALLED'/exports/share' >> /etc/env.dyn
+  else
+    # No persistence file: the baked module becomes the system installation,
+    # which is what /etc/profile and /ydfs/fix/flatpak-desktop already expect.
+    FLATPAKDIR=$HOME_DIBAB/$ARCH/var/lib/flatpak
+    install -d $HOME_DIBAB/$ARCH/var/lib
+    # It arrives as a real directory, copied into the tmpfs root by
+    # /ydfs/detect/modules; without this, ln would link inside it.
+    [ -d $FLATPAKDIR ] && [ ! -L $FLATPAKDIR ] && rm -fR $FLATPAKDIR
+    ln -sfn $PREINSTALLED $FLATPAKDIR
+  fi
+fi

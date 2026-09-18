@@ -824,8 +824,82 @@ footer {
 .repo-status.error {
   color: var(--danger-text);
 }
+/* Flathub application picker: a fieldset, so the twenty checkboxes are one
+   labelled group rather than a label nested inside another label. */
+.apps-field {
+  border: 0;
+  padding: 0;
+  margin: 0 0 17px;
+  min-width: 0;
+}
+.apps-field legend {
+  display: block;
+  width: 100%;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+.apps {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 14px;
+  margin-top: 10px;
+  padding: 13px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--input);
+  /* .panel is overflow:hidden, so a long list has to scroll inside itself. */
+  max-height: 260px;
+  overflow: auto;
+}
+.apps .check {
+  margin-top: 0;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+.apps .check span {
+  min-width: 0;
+}
+.apps .check small {
+  overflow-wrap: anywhere;
+}
+.apps-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+}
+.apps-actions .secondary {
+  width: auto;
+  margin: 0;
+}
+.apps-actions small {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+  text-align: right;
+}
+.apps-field .hint {
+  display: block;
+  margin: 7px 0 0;
+}
+.apps-field .hint.error {
+  color: var(--danger-text);
+}
 @media (max-width: 740px) {
   .commits {
     grid-template-columns: 1fr;
+  }
+  .apps {
+    grid-template-columns: 1fr;
+  }
+  .apps-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .apps-actions small {
+    text-align: left;
   }
 }

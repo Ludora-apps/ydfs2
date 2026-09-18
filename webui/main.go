@@ -37,6 +37,9 @@ type App struct {
 	upstreamFrom               string
 	upstream                   *Commit
 	upstreamAt                 time.Time
+	flathubMu                  sync.Mutex
+	flathubFrom                string
+	flathub                    *FlathubCatalogue
 	wake                       chan struct{}
 	ctx                        context.Context
 	docker                     string
@@ -183,6 +186,8 @@ func (a *App) handler() http.Handler {
 	mux.HandleFunc("GET /api/repository", a.repository)
 	mux.HandleFunc("POST /api/repository/check", a.repositoryCheck)
 	mux.HandleFunc("POST /api/repository/update", a.repositoryUpdate)
+	mux.HandleFunc("GET /api/flathub", a.flathubCatalogue)
+	mux.HandleFunc("POST /api/flathub/refresh", a.flathubRefresh)
 	mux.HandleFunc("GET /api/jobs", func(w http.ResponseWriter, r *http.Request) {
 		js, e := a.jobs()
 		if e != nil {
@@ -262,6 +267,7 @@ func (a *App) profiles(w http.ResponseWriter, r *http.Request) {
 			fail(w, 500, e.Error())
 			return
 		}
+		p.Settings.normalize()
 		ps = append(ps, p)
 	}
 	respond(w, ps)

@@ -75,6 +75,7 @@ fi
 
 # . /ydfs/enable/virtualbox
 
+. /ydfs/enable/flatpak-preinstalled
 . /ydfs/enable/flatpak-disk
 
 /fix/libs

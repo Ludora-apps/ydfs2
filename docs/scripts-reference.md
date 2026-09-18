@@ -24,6 +24,7 @@ targets rather than run directly.
 | `make_firmwares` | Builds (or reuses a cached squashfs of) the `firmware-$ARCH` module. |
 | `make_modules` | Builds the core `$ARCH` module and other module squashfs images; honors `BUILDYDFS=fast` to reuse prebuilt squashfs instead of compiling. |
 | `make_module` | Builds/strips/packages a single named module (e.g. `virtualbox`) into a squashfs. |
+| `make_flatpak` | Downloads the Flathub applications listed in `data/flathub-apps` into a staging Flatpak installation (`$HOME/flatpak`), which `make_module flatpak` then packs into `flatpak-$ARCH.squashfs`. No-op when the list is empty. See [flatpak-preinstall.md](flatpak-preinstall.md). |
 | `make_initramfs` | Assembles the initramfs (BusyBox + kernel modules + hooks). |
 | `make_iso` | Generates the isolinux/UEFI boot menu and assembles the final ISO image. |
 | `make_devs` | Creates device nodes (`mknod`) needed inside a module's root. |

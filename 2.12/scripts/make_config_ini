@@ -40,7 +40,17 @@ echo "BUILDOPKG=$BUILDOPKG" >> config.ini
 # echo "DEBUG YDFS_MODULES=$YDFS_MODULES"
 echo "YDFS_MODULES=\"$YDFS_MODULES\"" >> config.ini
 
-echo 'MODULES="${ARCH} '"$DISTRONAME"'-${ARCH} drivers-${ARCH} firmware-${ARCH} mate-${ARCH}"' >> config.ini
+# Ship the pre-installed Flathub applications as one extra module, but only
+# when data/flathub-apps actually lists some: scripts/make_iso exits 1 on a
+# module named in MODULES that was never built. ${ARCH} stays literal here,
+# it is expanded when config.ini is sourced.
+FLATPAKMODULE=""
+if [ -e data/flathub-apps ]
+then
+  sed -e 's/\r$//' -e 's/#.*//' data/flathub-apps | grep -q '[^[:space:]]' && FLATPAKMODULE=' flatpak-${ARCH}'
+fi
+
+echo 'MODULES="${ARCH} '"$DISTRONAME"'-${ARCH} drivers-${ARCH} firmware-${ARCH} mate-${ARCH}'"$FLATPAKMODULE"'"' >> config.ini
 
 if [ "$DIBAB_VERBOSE_BUILD" = "YES" ]
 then

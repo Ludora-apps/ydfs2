@@ -62,7 +62,7 @@ func (a *App) capabilities(w http.ResponseWriter, r *http.Request) {
 		user = "local-developer"
 	}
 	packageLists, _ := a.packageListNames()
-	respond(w, map[string]any{"targets": targets, "packageLists": packageLists, "architecture": "x86_64", "distribution": "linuxconsole", "user": user, "docker": dockerOK && ce == nil, "freeBytes": free, "minFreeBytes": a.minFree, "ready": msg == "", "message": msg, "defaults": Settings{Target: "fast-iso", Verbose: true}, "development": a.dev})
+	respond(w, map[string]any{"targets": targets, "packageLists": packageLists, "flathub": a.catalogue(), "architecture": "x86_64", "distribution": "linuxconsole", "user": user, "docker": dockerOK && ce == nil, "freeBytes": free, "minFreeBytes": a.minFree, "ready": msg == "", "message": msg, "defaults": Settings{Target: "fast-iso", Verbose: true, Flatpaks: []string{}}, "development": a.dev})
 }
 func gitOutput(repo string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
@@ -129,6 +129,16 @@ func (a *App) submit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The browser's list is never authoritative about what may be built in.
+	for _, id := range s.Flatpaks {
+		if !a.allowedFlatpak(id) {
+			fail(w, 400, "unknown Flathub application "+id)
+			return
+		}
+	}
+	if s.Flatpaks == nil {
+		s.Flatpaks = []string{}
+	}
 	free, e := a.freeBytes()
 	if e != nil || free < a.minFree {
 		fail(w, 409, "insufficient free storage")
@@ -177,6 +187,26 @@ func (a *App) submit(w http.ResponseWriter, r *http.Request) {
 		if e != nil {
 			os.RemoveAll(dir)
 			fail(w, 500, "cannot apply package list override")
+			return
+		}
+	}
+	if len(s.Flatpaks) > 0 {
+		// Same rule as the package list: the selection replaces this file
+		// inside the job's own snapshot only, so the shared checkout and other
+		// queued jobs keep theirs. scripts/make_config_ini and the flatpak make
+		// target read it from /tmp/ydfs once the container copies the snapshot.
+		target := filepath.Join(dir, "source", "data", "flathub-apps")
+		if e = os.MkdirAll(filepath.Dir(target), 0755); e == nil {
+			if _, se := os.Stat(target); se == nil {
+				e = os.Chmod(target, 0644)
+			}
+		}
+		if e == nil {
+			e = os.WriteFile(target, []byte(strings.Join(s.Flatpaks, "\n")+"\n"), 0644)
+		}
+		if e != nil {
+			os.RemoveAll(dir)
+			fail(w, 500, "cannot apply Flathub selection")
 			return
 		}
 	}

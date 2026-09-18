@@ -1,0 +1,65 @@
+#!/bin/bash
+# Download the Flathub applications listed in data/flathub-apps into a staging
+# Flatpak installation ($HOME/flatpak), so that scripts/make_module can turn it
+# into flatpak-$ARCH.squashfs and scripts/make_iso can ship it. The result is
+# that the applications are present on the ISO and usable with no network.
+
+. ./config.ini
+
+LIST=$HOME_DIBAB/data/flathub-apps
+[ ! -e "$LIST" ] && echo "No $LIST, nothing to pre-install" && exit 0
+
+# Comments and blank lines are not application IDs.
+APPS=$(sed -e 's/\r$//' -e 's/#.*//' "$LIST" | tr -s '[:space:]' '\n' | grep -v '^$')
+[ -z "$APPS" ] && echo "No Flathub application selected" && exit 0
+
+# This file is hand-editable, and every ID below becomes a flatpak argument.
+for APP in $APPS
+do
+  echo "$APP" | grep -Eq '^[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+){1,8}$' && continue
+  echo "Error : invalid Flathub application ID \"$APP\"" && exit 1
+done
+
+export PATH=$HOME/$ARCH/bin:$PATH
+export LD_LIBRARY_PATH=$HOME/$ARCH/lib
+
+if [ ! -x $HOME/$ARCH/bin/flatpak ]
+then
+  echo "Error : $HOME/$ARCH/bin/flatpak not found, cannot pre-install applications"
+  echo "        flatpak is built by packages/list-updates, run 'make updates' first"
+  exit 1
+fi
+
+# --user with an overridden directory keeps the whole operation inside
+# $HOME/flatpak: no polkit, no flatpak-system-helper, neither of which exists
+# in the build container. The layout is identical to a system installation,
+# which is what it becomes once mounted on the live system.
+export FLATPAK_USER_DIR=$HOME/flatpak
+install -d $FLATPAK_USER_DIR
+
+echo "Pre-installing Flathub applications into $FLATPAK_USER_DIR"
+
+# The .flatpakrepo carries the GPG key, so no separate key download is needed.
+flatpak --user remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo || exit 1
+
+for APP in $APPS
+do
+  echo "Install $APP"
+  flatpak --user install -y --noninteractive --or-update flathub "$APP" || exit 1
+done
+
+# $HOME is a cache shared by every build, so a previous build's selection would
+# otherwise linger in the module. Drop applications that are no longer listed,
+# then the runtimes left without a user.
+flatpak --user list --app --columns=application | while read INSTALLED
+do
+  [ -z "$INSTALLED" ] && continue
+  echo "$APPS" | grep -qx "$INSTALLED" && continue
+  echo "Remove $INSTALLED (no longer selected)"
+  flatpak --user uninstall -y --noninteractive "$INSTALLED"
+done
+flatpak --user uninstall -y --noninteractive --unused
+
+echo "Pre-installed applications :"
+flatpak --user list --columns=application,branch,size
+du -sh $FLATPAK_USER_DIR

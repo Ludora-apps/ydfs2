@@ -64,6 +64,17 @@ before kicking off a long build, and
 `bash 2.12/scripts/echo-archpkg <pkg>` to check the latest upstream version
 Arch Linux packages for reference.
 
+## `data/flathub-apps` — pre-installing Flathub applications
+
+Listing Flathub application IDs in
+[`2.12/data/flathub-apps`](../2.12/data/flathub-apps) (one per line, `#`
+comments allowed) makes `make iso` download those applications during the build
+and ship them inside an extra `flatpak-$ARCH.squashfs` module, so they work on
+the live system with no network. An empty or comments-only list changes nothing
+about the build. The same selection is available as a box in the web UI build
+form. See [flatpak-preinstall.md](flatpak-preinstall.md) for the full design,
+the size cost, and the boot-time wiring.
+
 ## Per-package build overrides
 
 `2.12/scripts/includes/<pkg>/` holds shell fragments sourced during that

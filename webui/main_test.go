@@ -152,6 +152,140 @@ func TestPackageListSubmission(t *testing.T) {
 		}
 	}
 }
+func TestFlathubValidation(t *testing.T) {
+	for _, s := range []Settings{
+		{Target: "fast-iso", Flatpaks: []string{"org.videolan.VLC", "com.github.tchx84.Flatseal"}},
+		{Target: "full-iso", Flatpaks: []string{"org.DolphinEmu.dolphin-emu", "org.localsend.localsend_app"}},
+		{Target: "mate"},
+		{Target: "fast-iso", Flatpaks: []string{}},
+	} {
+		if e := s.validate(); e != nil {
+			t.Fatal(e, s)
+		}
+	}
+	tooMany := []string{}
+	for i := 0; i <= maxFlatpakApps; i++ {
+		tooMany = append(tooMany, fmt.Sprintf("org.example.App%d", i))
+	}
+	for _, s := range []Settings{
+		// Only an ISO carries applications; a component build cannot.
+		{Target: "mate", Flatpaks: []string{"org.videolan.VLC"}},
+		{Target: "kernel", Flatpaks: []string{"org.videolan.VLC"}},
+		{Target: "fast-iso", Flatpaks: tooMany},
+		{Target: "fast-iso", Flatpaks: []string{"org.videolan.VLC", "org.videolan.VLC"}},
+		// Every one of these would otherwise reach flatpak as an argument, or
+		// data/flathub-apps as a line.
+		{Target: "fast-iso", Flatpaks: []string{"org.videolan.VLC;rm -rf /"}},
+		{Target: "fast-iso", Flatpaks: []string{"org.videolan.VLC\nSEND_OPKG=YES"}},
+		{Target: "fast-iso", Flatpaks: []string{"$(touch /tmp/injected)"}},
+		{Target: "fast-iso", Flatpaks: []string{"`touch /tmp/injected`"}},
+		{Target: "fast-iso", Flatpaks: []string{"../../etc/passwd"}},
+		{Target: "fast-iso", Flatpaks: []string{"org.videolan.VLC --system"}},
+		{Target: "fast-iso", Flatpaks: []string{"org..VLC"}},
+		{Target: "fast-iso", Flatpaks: []string{"VLC"}},
+		{Target: "fast-iso", Flatpaks: []string{""}},
+		{Target: "fast-iso", Flatpaks: []string{".org.videolan.VLC"}},
+	} {
+		if s.validate() == nil {
+			t.Fatalf("accepted unsafe Flathub settings: %#v", s)
+		}
+	}
+}
+func TestFlathubCatalogue(t *testing.T) {
+	a := testApp(t)
+	// Nothing cached and no network: the built-in list still fills the form.
+	w := request(a, "GET", "/api/flathub", "")
+	var c FlathubCatalogue
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &c) != nil {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if c.Source != "built-in" || len(c.Apps) != len(flathubFallback) {
+		t.Fatalf("unexpected cold-start catalogue: %+v", c)
+	}
+	if !a.allowedFlatpak("org.videolan.VLC") || a.allowedFlatpak("org.example.NotReal") {
+		t.Fatal("built-in list is not acting as the allowlist")
+	}
+	// A refresh replaces it, and drops anything that is not an application ID.
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"hits":[{"app_id":"org.example.Live","name":"Live","summary":"s"},{"app_id":"not an id;rm -rf /","name":"Bad"}]}`)
+	}))
+	defer live.Close()
+	a.flathubFrom = live.URL
+	w = request(a, "POST", "/api/flathub/refresh", "")
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &c) != nil {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if c.Source != "flathub" || c.Error != "" || len(c.Apps) != 1 || c.Apps[0].ID != "org.example.Live" {
+		t.Fatalf("unexpected refreshed catalogue: %+v", c)
+	}
+	if !a.allowedFlatpak("org.example.Live") || !a.allowedFlatpak("org.videolan.VLC") {
+		t.Fatal("refresh must add to the allowlist, never shrink it below the built-in list")
+	}
+	// A failed refresh reports why and keeps what the form already had.
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", 500)
+	}))
+	defer down.Close()
+	a.flathubFrom = down.URL
+	w = request(a, "POST", "/api/flathub/refresh", "")
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &c) != nil {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if c.Error == "" || len(c.Apps) != 1 || c.Apps[0].ID != "org.example.Live" {
+		t.Fatalf("failed refresh lost the catalogue: %+v", c)
+	}
+	// And it survives a restart, because it was written to the data directory.
+	b := &App{db: a.db, data: a.data}
+	if got := b.catalogue(); got.Source != "flathub" || len(got.Apps) != 1 {
+		t.Fatalf("cached catalogue not reloaded: %+v", got)
+	}
+}
+func TestFlathubSubmission(t *testing.T) {
+	a := testApp(t)
+	source := filepath.Join(a.repo, "2.12")
+	putFile(t, filepath.Join(source, "Makefile"), "")
+	putFile(t, filepath.Join(source, "data", "flathub-apps"), "# nothing selected\n")
+	for _, args := range [][]string{{"init"}, {"add", "."}, {"-c", "user.name=Test", "-c", "user.email=test@example.org", "commit", "-m", "fixture"}, {"tag", "v2.12.1"}} {
+		cmd := exec.Command("git", append([]string{"-C", a.repo}, args...)...)
+		if b, e := cmd.CombinedOutput(); e != nil {
+			t.Fatal(e, string(b))
+		}
+	}
+	// Syntactically valid, but not something the server offered.
+	w := request(a, "POST", "/api/jobs", `{"target":"fast-iso","verbose":true,"kernel":"","configOverrides":"","packageList":"","packageListText":"","flatpaks":["org.example.NotReal"]}`)
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "unknown Flathub application") {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	w = request(a, "POST", "/api/jobs", `{"target":"fast-iso","verbose":true,"kernel":"","configOverrides":"","packageList":"","packageListText":"","flatpaks":["org.videolan.VLC","com.github.tchx84.Flatseal"]}`)
+	if w.Code != 202 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	var j Job
+	if e := json.Unmarshal(w.Body.Bytes(), &j); e != nil {
+		t.Fatal(e)
+	}
+	b, e := os.ReadFile(filepath.Join(a.dir(&j), "source", "data", "flathub-apps"))
+	if e != nil || string(b) != "org.videolan.VLC\ncom.github.tchx84.Flatseal\n" {
+		t.Fatal(e, string(b))
+	}
+	untouched, e := os.ReadFile(filepath.Join(source, "data", "flathub-apps"))
+	if e != nil || string(untouched) != "# nothing selected\n" {
+		t.Fatal("mutated shared checkout", e, string(untouched))
+	}
+	// A build with no applications must leave the repository's own file alone.
+	w = request(a, "POST", "/api/jobs", `{"target":"fast-iso","verbose":true,"kernel":"","configOverrides":"","packageList":"","packageListText":"","flatpaks":[]}`)
+	if w.Code != 202 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	var empty Job
+	if e := json.Unmarshal(w.Body.Bytes(), &empty); e != nil {
+		t.Fatal(e)
+	}
+	b, e = os.ReadFile(filepath.Join(a.dir(&empty), "source", "data", "flathub-apps"))
+	if e != nil || string(b) != "# nothing selected\n" {
+		t.Fatal("empty selection rewrote the list", e, string(b))
+	}
+}
 func TestAuthenticationAndCSRF(t *testing.T) {
 	a := testApp(t)
 	tests := []struct {
@@ -324,6 +458,110 @@ func TestGeneratedConfigurationWorksInMakeAndShell(t *testing.T) {
 				t.Fatal(e, string(makeOut), string(shellOut))
 			}
 			if kernel != "" && !strings.Contains(string(makeOut), kernel) {
+				t.Fatal(string(makeOut))
+			}
+		})
+	}
+}
+
+// data/flathub-apps is hand-editable for command-line builds, so the script
+// that turns it into flatpak arguments re-validates it rather than trusting
+// whatever the web UI already checked.
+func TestMakeFlatpakRejectsUnsafeApplicationIDs(t *testing.T) {
+	script, e := filepath.Abs("../2.12/scripts/make_flatpak")
+	if e != nil {
+		t.Fatal(e)
+	}
+	run := func(t *testing.T, list string) (string, error) {
+		t.Helper()
+		dir := t.TempDir()
+		putFile(t, filepath.Join(dir, "config.ini"), "ARCH=x86_64\nHOME_DIBAB="+dir+"\n")
+		putFile(t, filepath.Join(dir, "data", "flathub-apps"), list)
+		cmd := exec.Command("bash", script)
+		cmd.Dir = dir
+		// An empty HOME keeps a hostile list from ever reaching a real flatpak.
+		cmd.Env = append(os.Environ(), "HOME="+filepath.Join(dir, "empty"))
+		b, e := cmd.CombinedOutput()
+		return string(b), e
+	}
+	for _, list := range []string{
+		"org.videolan.VLC; rm -rf /\n",
+		"$(touch /tmp/injected)\n",
+		"`touch /tmp/injected`\n",
+		"../../etc/passwd\n",
+		"org.videolan.VLC --installation=system\n",
+	} {
+		out, e := run(t, list)
+		if e == nil {
+			t.Fatalf("accepted unsafe list %q: %s", list, out)
+		}
+		if !strings.Contains(out, "invalid Flathub application ID") {
+			t.Fatalf("wrong failure for %q: %s", list, out)
+		}
+	}
+	// Nothing selected is not an error, and must not need flatpak at all.
+	for _, list := range []string{"", "# nothing\n"} {
+		if out, e := run(t, list); e != nil {
+			t.Fatalf("empty list failed: %v %s", e, out)
+		}
+	}
+	// A valid list gets past validation and only then misses the binary.
+	out, e := run(t, "org.videolan.VLC\ncom.github.tchx84.Flatseal\n")
+	if e == nil || !strings.Contains(out, "flatpak not found") {
+		t.Fatalf("expected a missing-binary failure, got %v: %s", e, out)
+	}
+}
+
+// The flatpak module must reach MODULES only when data/flathub-apps actually
+// lists an application: scripts/make_iso exits 1 on a module named there but
+// never built. ${ARCH} has to survive as a variable into config.ini, so this
+// checks the expansion under both `make include` and `bash .` sourcing.
+func TestFlathubModuleEntersConfiguration(t *testing.T) {
+	script, e := filepath.Abs("../2.12/scripts/make_config_ini")
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, tt := range []struct {
+		name, list string
+		want       bool
+	}{
+		{"no list at all", "", false},
+		{"comments only", "# nothing selected\n\n", false},
+		{"one application", "org.videolan.VLC\n", true},
+		{"comment and application", "# pick\norg.videolan.VLC\n", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tt.list != "" {
+				putFile(t, filepath.Join(dir, "data", "flathub-apps"), tt.list)
+			}
+			cmd := exec.Command("bash", script)
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(), "YDFS_ARCH=x86_64", "DISTRONAME=linuxconsole", "SEND_BUILD_LOG=NO", "BUILDYDFS=fast")
+			if b, e := cmd.CombinedOutput(); e != nil {
+				t.Fatal(e, string(b))
+			}
+			putFile(t, filepath.Join(dir, "check.mk"), "include config.ini\n.PHONY: check\ncheck:\n\t@echo $(MODULES)\n")
+			makeCmd := exec.Command("make", "-s", "-f", "check.mk", "check")
+			makeCmd.Dir = dir
+			makeOut, e := makeCmd.CombinedOutput()
+			if e != nil {
+				t.Fatal(e, string(makeOut))
+			}
+			// MODULES is written before ARCH in config.ini, so a bare source
+			// leaves ${ARCH} empty. The build scripts never see that: 2.12/Makefile
+			// exports ARCH before running them, so reproduce that here.
+			shell := exec.Command("bash", "-c", `export ARCH=x86_64; . ./config.ini; echo $MODULES`)
+			shell.Dir = dir
+			shellOut, e := shell.CombinedOutput()
+			if e != nil || string(makeOut) != string(shellOut) {
+				t.Fatal(e, string(makeOut), string(shellOut))
+			}
+			if got := strings.Contains(string(makeOut), "flatpak-x86_64"); got != tt.want {
+				t.Fatalf("flatpak module present=%v, want %v: %s", got, tt.want, makeOut)
+			}
+			// The rest of the ISO must be unaffected either way.
+			if !strings.Contains(string(makeOut), "linuxconsole-x86_64") || !strings.Contains(string(makeOut), "mate-x86_64") {
 				t.Fatal(string(makeOut))
 			}
 		})

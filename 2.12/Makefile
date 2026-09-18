@@ -180,11 +180,26 @@ crosstool-ng-x86_64:
 ${GCCPATH}: 
 	bash scripts/make_toolchain
 toolchain: ${GCCPATH}
+# Flathub applications to pre-install, from data/flathub-apps (comments and
+# blank lines removed). Empty by default, and then FLATPAKMODULE stays empty so
+# nothing below changes.
+FLATHUB_APPS := $(shell sed -e 's/\r$$//' -e 's/#.*//' data/flathub-apps 2>/dev/null | tr -s '[:space:]' ' ')
+ifneq ($(strip $(FLATHUB_APPS)),)
+FLATPAKMODULE = ${LCMBUILD}/flatpak-${ARCH}.squashfs
+endif
+
+flatpak: ${LCMBUILD}/flatpak-${ARCH}.squashfs
+# SKIP_STRIP is required: an OSTree checkout is a web of hardlinks into
+# repo/objects, and stripping the binaries in place would corrupt it.
+${LCMBUILD}/flatpak-${ARCH}.squashfs : data/flathub-apps scripts/make_flatpak
+	bash scripts/make_flatpak
+	if [ -e ${HOME}/flatpak ]; then SKIP_STRIP=OK bash scripts/make_module flatpak; else echo "No Flathub application selected, no module built"; fi
+
 iso: isodep wineprogs ${ISOPATH} # sleep
 metalink:
 	bash scripts/iso_to_metalink
 
-${ISOPATH}: scripts/make_iso ${HOME}/ydfs/build-${ARCH}/${INITRAMFS} ${LCMBUILD}/${ARCH}.squashfs ${LCMBUILD}/mate-${ARCH}.squashfs ${LCMBUILD}/firmware-${ARCH}.squashfs # ${LCMBUILD}/kde-${ARCH}.squashfs # config.ini #  ${LCMBUILD}
+${ISOPATH}: scripts/make_iso ${HOME}/ydfs/build-${ARCH}/${INITRAMFS} ${LCMBUILD}/${ARCH}.squashfs ${LCMBUILD}/mate-${ARCH}.squashfs ${LCMBUILD}/firmware-${ARCH}.squashfs ${FLATPAKMODULE} # ${LCMBUILD}/kde-${ARCH}.squashfs # config.ini #  ${LCMBUILD}
 	bash scripts/make_iso
 
 config.ini:
