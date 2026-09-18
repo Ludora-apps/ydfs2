@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+// Type only: the client itself is imported lazily, when a console is opened.
+import type RFB from "@novnc/novnc";
 import "./style.css";
 
 type Settings = {
@@ -68,6 +70,24 @@ type Capabilities = {
   ready: boolean;
   message: string;
   development: boolean;
+  vm: boolean;
+  vmMessage: string;
+};
+// The single test machine (see vm.go). `state` is "stopped" both when nothing
+// ever ran and when the last session ended; `error` then says why it ended.
+type VMStatus = {
+  session?: string;
+  jobId?: string;
+  target?: string;
+  iso?: string;
+  state: "stopped" | "starting" | "running" | "stopping";
+  started?: string;
+  user?: string;
+  viewers: number;
+  idleFor: number;
+  idleLimit?: number;
+  password?: string;
+  error?: string;
 };
 const names: Record<string, string> = {
   "fast-iso": "Fast ISO",
@@ -405,6 +425,117 @@ async function api<T>(
   }
   return res.json();
 }
+// The live screen of the test machine, over noVNC.
+//
+// noVNC is loaded on demand: it is ~90 kB that most sessions never open, and a
+// same-origin dynamic import satisfies the app's script-src 'self' policy.
+function VmConsole({
+  vm,
+  onStop,
+  busy,
+}: {
+  vm: VMStatus;
+  onStop: () => void;
+  busy: boolean;
+}) {
+  const screen = useRef<HTMLDivElement>(null);
+  const rfb = useRef<RFB | null>(null);
+  const [phase, setPhase] = useState("Connecting");
+  const [fit, setFit] = useState(true);
+  const live = vm.state === "running";
+  useEffect(() => {
+    if (!live || !screen.current) return;
+    let cancelled = false;
+    let client: RFB | undefined;
+    (async () => {
+      const { default: RFB } = await import("@novnc/novnc");
+      if (cancelled || !screen.current) return;
+      const url = new URL("/api/vm/console", location.href);
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      client = new RFB(screen.current, url.toString(), {
+        shared: true,
+        credentials: { password: vm.password || "" },
+      });
+      client.scaleViewport = true;
+      client.resizeSession = false;
+      client.background = "#0b1220";
+      client.addEventListener("connect", () => setPhase("Live"));
+      client.addEventListener("disconnect", (e) =>
+        setPhase(
+          (e as CustomEvent).detail?.clean ? "Disconnected" : "Connection lost",
+        ),
+      );
+      client.addEventListener("securityfailure", () =>
+        setPhase("Console refused the connection"),
+      );
+      rfb.current = client;
+    })();
+    return () => {
+      cancelled = true;
+      rfb.current = null;
+      client?.disconnect();
+    };
+    // Keyed on the server's session id, not the job: the job list refreshes
+    // every 5 seconds and re-dialling the console each time would be visible.
+  }, [vm.session, live]);
+  useEffect(() => {
+    if (rfb.current) rfb.current.scaleViewport = fit;
+  }, [fit]);
+  return (
+    <section className="panel console">
+      <div className="panel-heading">
+        <div className="panel-heading-title">
+          <h2>Test machine</h2>
+          <small>
+            {vm.iso || "ISO"} · {vm.state === "starting" ? "booting" : phase}
+            {vm.viewers === 0 && vm.state === "running" ? " · nobody watching" : ""}
+          </small>
+        </div>
+        <div className="detail-actions">
+          <button
+            className="quiet"
+            disabled={!live}
+            onClick={() => rfb.current?.sendKey(0xff0d, "Enter")}
+            title="The boot menu waits for a keypress before it starts"
+          >
+            Send Enter
+          </button>
+          <button
+            className="quiet"
+            disabled={!live}
+            onClick={() => rfb.current?.sendCtrlAltDel()}
+          >
+            Ctrl+Alt+Del
+          </button>
+          <button className="quiet" onClick={() => setFit((f) => !f)}>
+            {fit ? "1:1" : "Fit"}
+          </button>
+          <button
+            className="quiet"
+            onClick={() => screen.current?.requestFullscreen()}
+          >
+            Fullscreen
+          </button>
+          <button className="danger" disabled={busy} onClick={onStop}>
+            Stop machine
+          </button>
+        </div>
+      </div>
+      <div
+        className="vnc-screen"
+        ref={screen}
+        onClick={() => rfb.current?.focus()}
+      />
+      <p className="console-hint">
+        This ISO stops at its boot menu and waits for a keypress — press Enter
+        (or use the button) to start it. Click the screen before typing, so the
+        keyboard goes to the machine. Nothing here is saved: the machine is
+        discarded when you stop it, after 30 minutes with nobody watching, or
+        when you close the build manager.
+      </p>
+    </section>
+  );
+}
 function App() {
   const [ask, setAsk] = useState<Confirmation | undefined>();
   const [logList, setLogList] = useState<LogEntry[]>([]);
@@ -444,6 +575,11 @@ function App() {
     }
   }, [theme]);
   const [caps, setCaps] = useState<Capabilities>();
+  const [vm, setVm] = useState<VMStatus>({
+    state: "stopped",
+    viewers: 0,
+    idleFor: 0,
+  });
   const [jobs, setJobs] = useState<Job[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [repo, setRepo] = useState<Repository>();
@@ -594,19 +730,72 @@ function App() {
         }),
     });
   }
+  // Booting an ISO is not destructive and is easy to undo, so it starts on one
+  // click; stopping discards a machine someone may be using, so it asks.
+  function startVm(j: Job) {
+    action(async () => {
+      setVm(await api<VMStatus>(`/jobs/${j.id}/vm`, "POST", {}));
+    });
+  }
+  function stopVm(jobId: string) {
+    setAsk({
+      title: "Stop the test machine?",
+      body: "The virtual machine is discarded immediately. Nothing inside it is saved; the ISO itself is untouched.",
+      confirm: "Stop machine",
+      danger: true,
+      onConfirm: () =>
+        action(async () => {
+          setVm(await api<VMStatus>(`/jobs/${jobId}/vm`, "DELETE"));
+        }),
+    });
+  }
+  // One machine at a time, so every button consults the same live session.
+  const vmBusy = vm.state === "starting" || vm.state === "stopping";
+  const vmLive = vm.state !== "stopped";
+  function vmButton(j: Job) {
+    if (!isIso(j.settings.target) || j.state !== "succeeded" || j.prunedAt)
+      return null;
+    if (vmLive && vm.jobId === j.id)
+      return (
+        <button
+          className="danger"
+          disabled={busy || vmBusy}
+          onClick={() => stopVm(j.id)}
+        >
+          {vm.state === "starting" ? "Booting…" : "Stop machine"}
+        </button>
+      );
+    const blocked = !caps?.vm
+      ? caps?.vmMessage || "Test machines are unavailable on this server."
+      : vmLive
+        ? "A test machine is already running for another build."
+        : "";
+    return (
+      <button
+        className="quiet"
+        disabled={busy || !!blocked}
+        title={blocked || "Boot this ISO and watch it in the browser"}
+        onClick={() => startVm(j)}
+      >
+        ▶ Test in browser
+      </button>
+    );
+  }
   const active = jobs.find((j) => !done(j.state) && j.state !== "queued");
   const queued = jobs.filter((j) => j.state === "queued").length;
   async function refresh() {
-    const [c, j, p, l] = await Promise.all([
+    const [c, j, p, l, v] = await Promise.all([
       api<Capabilities>("/capabilities"),
       api<Job[]>("/jobs"),
       api<Profile[]>("/profiles"),
       api<LogEntry[]>("/logs"),
+      api<VMStatus>("/vm"),
     ]);
     setCaps(c);
     setJobs(j);
     setProfiles(p);
     setLogList(l);
+    setVm(v);
     setSelected((old) => old || j[0]?.id || "");
   }
   useEffect(() => {
@@ -1148,6 +1337,7 @@ function App() {
                         >
                           config.ini
                         </button>
+                        {vmButton(f)}
                         <button
                           className="quiet"
                           disabled={busy}
@@ -1240,6 +1430,7 @@ function App() {
                     </button>
                   ) : (
                     <div className="detail-actions">
+                      {vmButton(job)}
                       {job.state === "succeeded" && !job.prunedAt && (
                         <button
                           className="quiet"
@@ -1428,6 +1619,18 @@ function App() {
             </div>
           )}
         </section>
+        {/* Shown whatever build is selected: clicking another build must not
+            tear down a machine someone is watching. */}
+        {vmLive && vm.jobId && (
+          <VmConsole
+            vm={vm}
+            busy={busy || vmBusy}
+            onStop={() => stopVm(vm.jobId!)}
+          />
+        )}
+        {vm.state === "stopped" && vm.error && (
+          <p className="notice">Test machine: {vm.error}</p>
+        )}
         <footer>
           LinuxConsole 2026{" "}
           <span>Builds continue when you close this page.</span>

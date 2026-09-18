@@ -43,6 +43,14 @@ type App struct {
 	wake                       chan struct{}
 	ctx                        context.Context
 	docker                     string
+	// The single test VM (see vm.go). vmMu is its own lock: a.mu serialises
+	// build state, and booting an ISO must never wait on a build.
+	// Lock order, wherever both are needed, is a.mu then a.vmMu.
+	vmMu    sync.Mutex
+	vm      *VM
+	vmLast  *VM
+	kvm     string
+	vmImage string
 }
 
 func main() {
@@ -127,7 +135,7 @@ func main() {
 	defer db.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	a := &App{db: db, repo: absRepo, data: absData, origin: *origin, secret: os.Getenv("YDFS_PROXY_SECRET"), dev: *dev, minFree: *min * 1024 * 1024 * 1024, users: map[string]bool{}, wake: make(chan struct{}, 1), ctx: ctx, docker: "docker"}
+	a := &App{db: db, repo: absRepo, data: absData, origin: *origin, secret: os.Getenv("YDFS_PROXY_SECRET"), dev: *dev, minFree: *min * 1024 * 1024 * 1024, users: map[string]bool{}, wake: make(chan struct{}, 1), ctx: ctx, docker: "docker", kvm: "/dev/kvm", vmImage: vmImageTag}
 	for _, u := range strings.Split(os.Getenv("YDFS_ALLOWED_USERS"), ",") {
 		if u = strings.TrimSpace(u); u != "" {
 			a.users[strings.ToLower(u)] = true
@@ -142,6 +150,11 @@ func main() {
 	a.mu.Lock()
 	a.pruneLocked()
 	a.mu.Unlock()
+	// Test VMs are ephemeral: one that outlived its server holds 4 GiB and
+	// belongs to a session nobody can reach any more.
+	reapCtx, reapCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	a.reapVMs(reapCtx)
+	reapCancel()
 	done := make(chan struct{})
 	go func() { defer close(done); a.worker() }()
 	srv := &http.Server{Addr: net.JoinHostPort(*host, strconv.Itoa(*port)), Handler: a.handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32768}
@@ -157,6 +170,11 @@ func main() {
 		stop()
 	}
 	<-done
+	// Belt and braces: vmWatch stops its own container on shutdown, but this
+	// does not depend on a goroutine having got there first.
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	a.reapVMs(shutdownCtx)
+	shutdownCancel()
 }
 func respond(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -221,6 +239,10 @@ func (a *App) handler() http.Handler {
 	mux.HandleFunc("DELETE /api/jobs/{id}/log", a.deleteLog)
 	mux.HandleFunc("GET /api/logs", a.logs)
 	mux.HandleFunc("GET /api/jobs/{id}/artifacts/{name}", a.downloadArtifact)
+	mux.HandleFunc("GET /api/vm", a.vmStatus)
+	mux.HandleFunc("GET /api/vm/console", a.vmConsole)
+	mux.HandleFunc("POST /api/jobs/{id}/vm", a.vmStart)
+	mux.HandleFunc("DELETE /api/jobs/{id}/vm", a.vmStop)
 	mux.HandleFunc("GET /api/packages", a.packageLists)
 	mux.HandleFunc("GET /api/packages/{name}", a.packageListContent)
 	mux.HandleFunc("GET /api/profiles", a.profiles)

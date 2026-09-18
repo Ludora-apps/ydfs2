@@ -1238,3 +1238,21 @@ footer {
     text-align: left;
   }
 }
+/* Test machine console (VmConsole): the VNC canvas noVNC injects, plus the
+   toolbar around it. The screen is 640x480 at the boot menu and 1280x800 once
+   X starts, so the container is sized in the page and noVNC scales into it. */
+.panel.console .vnc-screen {
+  height: 520px;
+  margin: 0 -23px;
+  background: #0b1220;
+  overflow: hidden;
+}
+.panel.console .vnc-screen canvas {
+  display: block;
+}
+.console-hint {
+  margin: 14px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+}

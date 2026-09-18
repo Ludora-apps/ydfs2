@@ -568,7 +568,7 @@ func TestAuthenticationAndCSRF(t *testing.T) {
 			}
 		})
 	}
-	for _, path := range []string{"/", "/api/jobs", "/api/jobs/a/events", "/api/jobs/a/artifacts/file"} {
+	for _, path := range []string{"/", "/api/jobs", "/api/jobs/a/events", "/api/jobs/a/artifacts/file", "/api/vm", "/api/vm/console"} {
 		w := httptest.NewRecorder()
 		a.handler().ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 		if w.Code != 401 {
@@ -983,5 +983,135 @@ func TestRepositoryUpdate(t *testing.T) {
 	}
 	if out, e := a.git(context.Background(), "status", "--porcelain"); e != nil || out != "" {
 		t.Fatalf("checkout left dirty after conflict: %q %v", out, e)
+	}
+}
+
+// A WebSocket handshake is a GET, so handler()'s CSRF check does not see it and
+// a browser cannot be made to send X-Requested-With on one. Origin is the only
+// thing standing between an operator's other tabs and a live console.
+func TestVMConsoleRejectsForeignOrigin(t *testing.T) {
+	a := testApp(t)
+	r := httptest.NewRequest("GET", "/api/vm/console", nil)
+	r.RemoteAddr = "127.0.0.1:22"
+	r.Header.Set("X-Build-Proxy-Secret", a.secret)
+	r.Header.Set("X-Forwarded-User", "alice")
+	r.Header.Set("Upgrade", "websocket")
+	r.Header.Set("Origin", "https://evil.test")
+	w := httptest.NewRecorder()
+	a.handler().ServeHTTP(w, r)
+	if w.Code != 403 {
+		t.Fatalf("foreign origin accepted: %d %s", w.Code, w.Body.String())
+	}
+}
+func TestVMConsoleWithoutAMachine(t *testing.T) {
+	a := testApp(t)
+	r := httptest.NewRequest("GET", "/api/vm/console", nil)
+	r.RemoteAddr = "127.0.0.1:22"
+	r.Header.Set("X-Build-Proxy-Secret", a.secret)
+	r.Header.Set("X-Forwarded-User", "alice")
+	r.Header.Set("Origin", a.origin)
+	r.Header.Set("Upgrade", "websocket")
+	w := httptest.NewRecorder()
+	a.handler().ServeHTTP(w, r)
+	if w.Code != 409 {
+		t.Fatalf("got %d: %s", w.Code, w.Body.String())
+	}
+	// Without the upgrade header it is a plain GET, not a console.
+	r.Header.Del("Upgrade")
+	w = httptest.NewRecorder()
+	a.handler().ServeHTTP(w, r)
+	if w.Code != 400 {
+		t.Fatalf("non-websocket request: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// Every refusal to boot is checked before Docker is consulted, so a.docker is
+// left pointing at a command that would fail if it were ever run.
+func TestVMStartValidation(t *testing.T) {
+	a := testApp(t)
+	a.docker = filepath.Join(t.TempDir(), "absent-docker")
+	saveArtifactJob(t, a, "20260101", "fast-iso", "linuxconsole.iso")
+	pruned := saveArtifactJob(t, a, "20260102", "fast-iso", "linuxconsole.iso")
+	pruned.PrunedAt = now()
+	pruned.Artifacts = []Artifact{}
+	if e := a.saveJob(pruned); e != nil {
+		t.Fatal(e)
+	}
+	saveArtifactJob(t, a, "20260103", "kernel", "bzImage")
+	failed := saveArtifactJob(t, a, "20260104", "fast-iso", "linuxconsole.iso")
+	failed.State = "failed"
+	if e := a.saveJob(failed); e != nil {
+		t.Fatal(e)
+	}
+	gone := saveArtifactJob(t, a, "20260105", "fast-iso", "linuxconsole.iso")
+	if e := os.Remove(filepath.Join(a.dir(gone), "output", "linuxconsole.iso")); e != nil {
+		t.Fatal(e)
+	}
+	for _, tt := range []struct {
+		name, id string
+		code     int
+	}{
+		{"unknown build", "nosuchbuild", 404},
+		{"reclaimed artifacts", "20260102", 409},
+		{"component build", "20260103", 409},
+		{"failed build", "20260104", 409},
+		{"iso missing on disk", "20260105", 409},
+		// KVM is absent in tests (a.kvm points inside the temp dir), so a
+		// valid build gets as far as the capability check and no further.
+		{"no kvm on this host", "20260101", 503},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			w := request(a, "POST", "/api/jobs/"+tt.id+"/vm", "{}")
+			if w.Code != tt.code {
+				t.Fatalf("got %d: %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+// The button's tooltip and the error the button produces come from the same
+// probe, so they can never disagree about why booting is unavailable.
+func TestCapabilitiesReportVMSupport(t *testing.T) {
+	a := testApp(t)
+	p := filepath.Join(t.TempDir(), "docker")
+	putFile(t, p, "#!/bin/sh\nexit 0\n")
+	os.Chmod(p, 0755)
+	a.docker = p
+	w := request(a, "GET", "/api/capabilities", "")
+	var caps struct {
+		VM        bool   `json:"vm"`
+		VMMessage string `json:"vmMessage"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &caps)
+	if caps.VM || !strings.Contains(caps.VMMessage, "KVM") {
+		t.Fatalf("expected KVM to be reported as missing: %+v", caps)
+	}
+	// With a stand-in for /dev/kvm and a docker that answers, support is on.
+	kvm := filepath.Join(t.TempDir(), "kvm")
+	putFile(t, kvm, "")
+	a.kvm = kvm
+	w = request(a, "GET", "/api/capabilities", "")
+	json.Unmarshal(w.Body.Bytes(), &caps)
+	if !caps.VM || caps.VMMessage != "" {
+		t.Fatalf("expected VM support: %+v", caps)
+	}
+}
+
+// Retention must not reclaim the ISO a machine is currently booted from: the
+// space would not even be freed, since QEMU holds the descriptor.
+func TestPruneKeepsTheBuildAMachineIsBooting(t *testing.T) {
+	a := testApp(t)
+	for _, n := range []string{"1", "2", "3", "4", "5"} {
+		saveArtifactJob(t, a, "2026010"+n, "fast-iso", "linuxconsole.iso")
+	}
+	a.vm = &VM{JobID: "20260101", State: "running"}
+	a.mu.Lock()
+	a.pruneLocked()
+	a.mu.Unlock()
+	if !artifactExists(t, a, "20260101", "linuxconsole.iso") {
+		t.Fatal("reclaimed the ISO of a running machine")
+	}
+	if artifactExists(t, a, "20260102", "linuxconsole.iso") {
+		t.Fatal("expected the other aged-out build to be reclaimed")
 	}
 }

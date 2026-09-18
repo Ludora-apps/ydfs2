@@ -53,6 +53,12 @@ func (a *App) pruneLocked() {
 		if window[class] <= keepBuilds || j.Favorite {
 			continue
 		}
+		// A build being booted right now keeps its files: reclaiming them
+		// under a live console would not even free the space (QEMU holds the
+		// descriptor) and would tell the viewer their ISO is gone.
+		if a.vmHolds(j.ID) {
+			continue
+		}
 		if e := a.pruneArtifacts(j); e != nil {
 			fmt.Fprintln(os.Stderr, "retention:", j.ID, e)
 		}

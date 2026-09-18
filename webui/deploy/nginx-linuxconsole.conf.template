@@ -1,5 +1,13 @@
 # Standalone site for this Hestia host; render __YDFS_PROXY_SECRET__ before installing.
 # Install separately from Hestia's generated domain files.
+
+# The test-machine console (/api/vm/console) is a WebSocket, so the upgrade has
+# to survive this hop. Namespaced because Hestia regenerates other conf.d files
+# and a second definition of a bare $connection_upgrade would fail `nginx -t`.
+map $http_upgrade $ydfs_connection_upgrade {
+    default upgrade;
+    ''      '';
+}
 server {
     listen 0.0.0.0:8088 ssl;
     server_name linuxconsole.ludora.studio;
@@ -37,9 +45,13 @@ server {
         proxy_set_header Host $http_host;
         proxy_set_header X-Forwarded-Proto https;
         proxy_http_version 1.1;
-        proxy_set_header Connection "";
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $ydfs_connection_upgrade;
         proxy_buffering off;
-        proxy_read_timeout 3600s;
+        # A VNC console pushes nothing while the screen is still, so the read
+        # timeout has to outlast the machine's own 30-minute idle rule.
+        proxy_read_timeout 7200s;
+        proxy_send_timeout 7200s;
         proxy_pass http://127.0.0.1:8080;
     }
 }

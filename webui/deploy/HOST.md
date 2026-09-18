@@ -14,6 +14,8 @@ Activated 2026-09-05 at `https://linuxconsole.ludora.studio:8088`.
 
 Validated: trusted HTTPS response, GitHub authorization redirect with the configured callback, both allowed accounts at the backend authorization boundary, denial of an unlisted account, and rejection of spoofed public identity headers. The interactive GitHub login must be completed by an authorized account owner. Firewall rules were not changed.
 
+The test-machine console (`/api/vm/console`) is a WebSocket. `location /` in `/etc/nginx/conf.d/ydfs-web-8088.conf` must therefore carry `proxy_set_header Upgrade $http_upgrade;` and `proxy_set_header Connection $ydfs_connection_upgrade;` (replacing `proxy_set_header Connection "";`) with the `map $http_upgrade $ydfs_connection_upgrade` block at `http` level, and `proxy_read_timeout`/`proxy_send_timeout` at `7200s` so a still screen is not cut. Build the QEMU image once with `cd webui && make vm-image`; `GET /api/capabilities` reports `vm: false` with a reason until it exists. Back the site file up to `/root` and run `sudo nginx -t` before reloading.
+
 After rebuilding the application:
 
 ```sh

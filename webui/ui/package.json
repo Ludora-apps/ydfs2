@@ -9,6 +9,7 @@
     "test": "playwright test"
   },
   "dependencies": {
+    "@novnc/novnc": "^1.7.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },
