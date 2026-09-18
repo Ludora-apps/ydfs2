@@ -1,0 +1,21 @@
+[Unit]
+Description=LinuxConsole web build manager
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=ydfs-build
+Group=ydfs-build
+SupplementaryGroups=docker
+EnvironmentFile=/etc/ydfs-web/server.env
+WorkingDirectory=/opt/ydfs2/webui
+ExecStart=/opt/ydfs2/webui/ydfs-web --repo /opt/ydfs2 --data /var/lib/ydfs-web --origin ${YDFS_ORIGIN} --port 8080
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

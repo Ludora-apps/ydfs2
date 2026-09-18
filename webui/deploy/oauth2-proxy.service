@@ -1,0 +1,17 @@
+[Unit]
+Description=GitHub authentication for LinuxConsole builds
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+DynamicUser=true
+EnvironmentFile=/etc/ydfs-web/oauth.env
+ExecStart=/usr/local/bin/oauth2-proxy --config=/etc/ydfs-web/oauth2-proxy.cfg
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

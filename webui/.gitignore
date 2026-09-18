@@ -1,0 +1,7 @@
+node_modules/
+ui/dist/
+internal/assets/dist/
+ydfs-web
+playwright-report/
+test-results/
+*.tsbuildinfo

@@ -1,0 +1,45 @@
+# Standalone site for this Hestia host; render __YDFS_PROXY_SECRET__ before installing.
+# Install separately from Hestia's generated domain files.
+server {
+    listen 0.0.0.0:8088 ssl;
+    server_name linuxconsole.ludora.studio;
+    ssl_certificate /home/ludora/conf/web/linuxconsole.ludora.studio/ssl/linuxconsole.ludora.studio.pem;
+    ssl_certificate_key /home/ludora/conf/web/linuxconsole.ludora.studio/ssl/linuxconsole.ludora.studio.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    client_max_body_size 16k;
+
+    location /oauth2/ {
+        proxy_pass http://127.0.0.1:4180;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Auth-Request-Redirect https://linuxconsole.ludora.studio:8088$request_uri;
+    }
+    location = /oauth2/auth {
+        internal;
+        proxy_pass http://127.0.0.1:4180;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Original-URL https://linuxconsole.ludora.studio:8088$request_uri;
+    }
+    location @github_login {
+        return 302 https://linuxconsole.ludora.studio:8088/oauth2/start?rd=https://linuxconsole.ludora.studio:8088/;
+    }
+    location / {
+        auth_request /oauth2/auth;
+        error_page 401 = @github_login;
+        auth_request_set $github_user $upstream_http_x_auth_request_user;
+        proxy_set_header X-Forwarded-User $github_user;
+        proxy_set_header X-Build-Proxy-Secret __YDFS_PROXY_SECRET__;
+        proxy_set_header X-Auth-Request-User "";
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_pass http://127.0.0.1:8080;
+    }
+}

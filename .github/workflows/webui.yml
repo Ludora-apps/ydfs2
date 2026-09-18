@@ -1,0 +1,29 @@
+name: Web build manager
+on:
+  push:
+    paths: ['webui/**', '.github/workflows/webui.yml']
+  pull_request:
+    paths: ['webui/**', '.github/workflows/webui.yml']
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: webui/go.mod
+          cache-dependency-path: webui/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: webui/ui/package-lock.json
+      - run: make build
+      - run: go vet ./... && go test -race ./...
+      - run: YDFS_DOCKER_TEST=1 go test -race -run TestDockerLifecycle -v .
+      - run: cd ui && npx playwright install --with-deps chromium && npm test
