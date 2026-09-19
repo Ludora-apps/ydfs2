@@ -20,6 +20,8 @@
   --danger: #412a2c;
   --danger-text: #f2aaa0;
   --danger-border: #754a47;
+  --warn: #3b3320;
+  --warn-text: #e8ce8a;
   --toolbar: #111e29;
   --terminal: #080f16;
   --terminal-text: #c4d6df;
@@ -46,6 +48,8 @@
   --danger: #faeae5;
   --danger-text: #ad564c;
   --danger-border: #e1bfb9;
+  --warn: #fdf3e0;
+  --warn-text: #8a6321;
   --toolbar: #f6f8fa;
   --terminal: #101b26;
   --terminal-text: #c4d6df;
@@ -647,6 +651,12 @@ dd {
   display: flex;
   justify-content: space-between;
 }
+/* Someone else has the page open. Not an error and not dismissible: it stands
+   while they are there and disappears on its own when they leave. */
+.alert.presence {
+  background: var(--warn);
+  color: var(--warn-text);
+}
 .alert button {
   border: 0;
   background: none;
@@ -836,6 +846,10 @@ footer {
   margin-top: 5px;
   font-size: 10px;
   color: var(--muted);
+}
+.commit small .dirty {
+  color: var(--danger-text);
+  font-weight: 700;
 }
 .commit .pending {
   margin-top: 0;

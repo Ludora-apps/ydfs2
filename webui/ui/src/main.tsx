@@ -122,6 +122,8 @@ type Capabilities = {
   architecture: string;
   distribution: string;
   user: string;
+  // Everyone else with the page open right now (see presence() in main.go).
+  others: string[];
   docker: boolean;
   freeBytes: number;
   minFreeBytes: number;
@@ -228,12 +230,6 @@ type PageId =
   | "activity";
 const menu: { id: PageId; label: string; icon: string; hint: string }[] = [
   { id: "repo", label: "Repository", icon: "◆", hint: "checkout and upstream" },
-  {
-    id: "favorites",
-    label: "Kept builds",
-    icon: "★",
-    hint: "never cleaned up",
-  },
   { id: "build", label: "New build", icon: "＋", hint: "configure and queue" },
   {
     id: "launch",
@@ -248,6 +244,12 @@ const menu: { id: PageId; label: string; icon: string; hint: string }[] = [
     hint: "applications in the ISO",
   },
   { id: "logs", label: "Logs", icon: "▤", hint: "every build log" },
+  {
+    id: "favorites",
+    label: "Kept builds",
+    icon: "★",
+    hint: "never cleaned up",
+  },
   {
     id: "profiles",
     label: "Saved profiles",
@@ -1621,7 +1623,9 @@ function App() {
         {commitCard(
           "THIS CHECKOUT",
           repo?.local,
-          repo?.dirty ? " · uncommitted changes" : undefined,
+          repo?.dirty ? (
+            <span className="dirty"> · uncommitted changes</span>
+          ) : undefined,
         )}
         {commitCard(
           "UPSTREAM · LINUXCONSOLE-ORG/YDFS2",
@@ -1629,7 +1633,7 @@ function App() {
           repo?.checkedAt ? ` · checked ${date(repo.checkedAt)}` : undefined,
         )}
       </div>
-      <p className={`repo-status ${repoError ? "error" : ""}`}>
+      <p className={`repo-status ${repoError || repo?.dirty ? "error" : ""}`}>
         {repoError ||
           (!repo
             ? "Reading the checkout…"
@@ -2505,6 +2509,18 @@ function App() {
           ))}
         </nav>
         <main>
+          {!!caps?.others?.length && (
+            <div className="alert presence" role="status">
+              <span>
+                <strong>{caps.others.join(", ")}</strong>
+                {caps.others.length > 1 ? " are" : " is"} also connected right
+                now. The checkout, the saved profiles and the build queue are
+                shared by everyone here — agree who is driving before switching
+                branches, saving settings or queueing a build, or you will
+                overwrite each other.
+              </span>
+            </div>
+          )}
           {error && (
             <div className="alert" role="alert">
               {error}

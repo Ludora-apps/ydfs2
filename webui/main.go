@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,17 +35,21 @@ type App struct {
 	minFree                    uint64
 	mu                         sync.Mutex
 	repoMu                     sync.Mutex
-	upstreamFrom               string
-	forkFrom                   string
-	upstream                   *Commit
-	upstreamAt                 time.Time
-	originError                string
-	flathubMu                  sync.Mutex
-	flathubFrom                string
-	flathub                    *FlathubCatalogue
-	wake                       chan struct{}
-	ctx                        context.Context
-	docker                     string
+	// Who is polling right now. The checkout, the profiles and the queue are
+	// shared, so an operator has to be told when someone else is working too.
+	presenceMu   sync.Mutex
+	seen         map[string]time.Time
+	upstreamFrom string
+	forkFrom     string
+	upstream     *Commit
+	upstreamAt   time.Time
+	originError  string
+	flathubMu    sync.Mutex
+	flathubFrom  string
+	flathub      *FlathubCatalogue
+	wake         chan struct{}
+	ctx          context.Context
+	docker       string
 	// The single test VM (see vm.go). vmMu is its own lock: a.mu serialises
 	// build state, and booting an ISO must never wait on a build.
 	// Lock order, wherever both are needed, is a.mu then a.vmMu.
@@ -144,7 +149,7 @@ func main() {
 	defer db.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	a := &App{db: db, repo: absRepo, data: absData, origin: *origin, secret: os.Getenv("YDFS_PROXY_SECRET"), dev: *dev, minFree: *min * 1024 * 1024 * 1024, users: map[string]bool{}, wake: make(chan struct{}, 1), ctx: ctx, docker: "docker", kvm: "/dev/kvm", vmImage: vmImageTag, gh: "gh"}
+	a := &App{seen: map[string]time.Time{}, db: db, repo: absRepo, data: absData, origin: *origin, secret: os.Getenv("YDFS_PROXY_SECRET"), dev: *dev, minFree: *min * 1024 * 1024 * 1024, users: map[string]bool{}, wake: make(chan struct{}, 1), ctx: ctx, docker: "docker", kvm: "/dev/kvm", vmImage: vmImageTag, gh: "gh"}
 	for _, u := range strings.Split(os.Getenv("YDFS_ALLOWED_USERS"), ",") {
 		if u = strings.TrimSpace(u); u != "" {
 			a.users[strings.ToLower(u)] = true
@@ -215,6 +220,35 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 		return false
 	}
 	return true
+}
+
+// presenceWindow is how long an open page counts as connected: it polls
+// capabilities every 5s, so three missed polls drop it off the list.
+const presenceWindow = 20 * time.Second
+
+// presence records this browser's poll and reports the other operators polling
+// right now, so the UI can warn before two of them overwrite each other's
+// settings or queue builds at the same time.
+func (a *App) presence(user string) []string {
+	now := time.Now()
+	others := []string{}
+	a.presenceMu.Lock()
+	defer a.presenceMu.Unlock()
+	if user != "" {
+		a.seen[user] = now
+	}
+	for u, t := range a.seen {
+		if u == user {
+			continue
+		}
+		if now.Sub(t) > presenceWindow {
+			delete(a.seen, u)
+			continue
+		}
+		others = append(others, u)
+	}
+	sort.Strings(others)
+	return others
 }
 func (a *App) handler() http.Handler {
 	mux := http.NewServeMux()

@@ -23,7 +23,7 @@ func testApp(t *testing.T) *App {
 		t.Fatal(e)
 	}
 	t.Cleanup(func() { db.Close() })
-	return &App{db: db, data: data, repo: t.TempDir(), ctx: context.Background(), origin: "https://build.test", secret: strings.Repeat("s", 32), users: map[string]bool{"alice": true}, wake: make(chan struct{}, 1), docker: "docker"}
+	return &App{seen: map[string]time.Time{}, db: db, data: data, repo: t.TempDir(), ctx: context.Background(), origin: "https://build.test", secret: strings.Repeat("s", 32), users: map[string]bool{"alice": true}, wake: make(chan struct{}, 1), docker: "docker"}
 }
 func request(a *App, method, path, body string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -966,6 +966,37 @@ func TestCancelDuringContainerPreparation(t *testing.T) {
 	}
 	if time.Since(start) > 3*time.Second {
 		t.Fatal("compose process group did not stop promptly")
+	}
+}
+
+// Two operators sharing one checkout must each see the other.
+func TestPresence(t *testing.T) {
+	a := testApp(t)
+	if o := a.presence("alice"); len(o) != 0 {
+		t.Fatalf("alone but saw %v", o)
+	}
+	if o := a.presence("yledoare"); len(o) != 1 || o[0] != "alice" {
+		t.Fatalf("second operator saw %v", o)
+	}
+	if o := a.presence("alice"); len(o) != 1 || o[0] != "yledoare" {
+		t.Fatalf("first operator saw %v", o)
+	}
+	// A browser that stopped polling drops off rather than warning forever.
+	a.presenceMu.Lock()
+	a.seen["yledoare"] = time.Now().Add(-presenceWindow - time.Second)
+	a.presenceMu.Unlock()
+	if o := a.presence("alice"); len(o) != 0 {
+		t.Fatalf("stale operator still listed: %v", o)
+	}
+	// A poll with no identity (dev mode behind no proxy) records nobody.
+	if o := a.presence(""); len(o) != 1 || o[0] != "alice" {
+		t.Fatalf("anonymous poll saw %v", o)
+	}
+	a.presenceMu.Lock()
+	_, anon := a.seen[""]
+	a.presenceMu.Unlock()
+	if anon {
+		t.Fatal("anonymous poll recorded a presence")
 	}
 }
 func gitFixture(t *testing.T, dir string, args ...string) {

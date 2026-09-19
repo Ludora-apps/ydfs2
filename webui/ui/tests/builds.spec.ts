@@ -6,6 +6,8 @@ async function fixture(
   let jobs: any[] = [];
   let profiles: any[] = [];
   let logs = true;
+  // Who else has the page open; the server reports this with capabilities.
+  const others: string[] = [];
   const commit = (revision: string, subject: string) => ({
     revision,
     subject,
@@ -88,6 +90,7 @@ async function fixture(
           "cinnamon",
         ],
         user: "alice",
+        others,
         docker: true,
         ready: true,
         freeBytes: 240 * 2 ** 30,
@@ -236,6 +239,7 @@ async function fixture(
   await expect(page.getByRole("heading", { name: "Repository" })).toBeVisible();
   await open(page, "New build");
   await expect(page.getByText("Build host ready")).toBeVisible();
+  return others;
 }
 // Click one entry of the left-hand menu.
 async function open(page: Page, label: string) {
@@ -790,4 +794,22 @@ test("a listed commit can be proposed upstream two ways", async ({ page }) => {
   expect(sent!.revision).toBe("b".repeat(40));
   // Where it landed is shown as a link, not swallowed by a transient notice.
   await expect(page.getByRole("link", { name: /pull\/7/ })).toBeVisible();
+});
+
+// The checkout, the profiles and the queue are shared, so a second operator
+// with the page open has to be visible to the first.
+test("a second operator connected is warned about", async ({ page }) => {
+  const others = await fixture(page);
+  await expect(page.locator(".alert.presence")).toHaveCount(0);
+  others.push("yledoare");
+  const banner = page.locator(".alert.presence");
+  await expect(banner).toContainText("yledoare", { timeout: 15000 });
+  await expect(banner).toContainText("is also connected");
+  // It is not an error and carries no dismiss button: it stands until they go.
+  await expect(banner.getByRole("button")).toHaveCount(0);
+  // It clears on its own once they stop polling (the page polls every 5s).
+  others.length = 0;
+  await expect(page.locator(".alert.presence")).toHaveCount(0, {
+    timeout: 15000,
+  });
 });

@@ -72,7 +72,7 @@ func (a *App) capabilities(w http.ResponseWriter, r *http.Request) {
 		vmMessage = "Docker is unavailable, so a build cannot be booted here"
 	}
 	packageLists, _ := a.packageListNames()
-	respond(w, map[string]any{"vm": vmMessage == "", "vmMessage": vmMessage, "targets": targets, "packageLists": packageLists, "architecture": "x86_64", "distribution": "linuxconsole", "user": user, "docker": dockerOK && ce == nil, "freeBytes": free, "minFreeBytes": a.minFree, "ready": msg == "", "message": msg, "defaults": Settings{Target: "fast-iso", Verbose: true, Flatpaks: []string{}}, "development": a.dev})
+	respond(w, map[string]any{"others": a.presence(user), "vm": vmMessage == "", "vmMessage": vmMessage, "targets": targets, "packageLists": packageLists, "architecture": "x86_64", "distribution": "linuxconsole", "user": user, "docker": dockerOK && ce == nil, "freeBytes": free, "minFreeBytes": a.minFree, "ready": msg == "", "message": msg, "defaults": Settings{Target: "fast-iso", Verbose: true, Flatpaks: []string{}}, "development": a.dev})
 }
 func gitOutput(repo string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
