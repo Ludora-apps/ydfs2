@@ -2477,6 +2477,19 @@ function App() {
           </p>
         </div>
         <div className="header-actions">
+          {/* The queue is the one number that matters whichever screen you are
+              on, so it rides in the header band as well as on New build. */}
+          <div className="header-queue" role="status" aria-label="Build queue">
+            <strong>
+              <span
+                className={`status-dot ${active ? "" : "idle"}`}
+                aria-hidden="true"
+              />
+              {active ? "1" : "0"} running{" "}
+              <span className="queued">/ {queued} queued</span>
+            </strong>
+            <small>One build at a time · shared cache</small>
+          </div>
           <div className="theme-switch" role="group" aria-label="Color theme">
             <button
               type="button"

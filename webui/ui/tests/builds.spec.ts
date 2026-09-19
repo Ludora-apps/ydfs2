@@ -813,3 +813,17 @@ test("a second operator connected is warned about", async ({ page }) => {
     timeout: 15000,
   });
 });
+
+// The queue is readable from every screen, not only from New build.
+test("the header carries the build queue on every screen", async ({ page }) => {
+  await fixture(page);
+  const header = page.locator(".header-queue");
+  await expect(header).toContainText("0 running");
+  await expect(header).toContainText("/ 0 queued");
+  await expect(header).toContainText("One build at a time · shared cache");
+  // It is the header, so it survives moving around the workspace.
+  await open(page, "Repository");
+  await expect(header).toBeVisible();
+  await open(page, "Logs");
+  await expect(header).toBeVisible();
+});

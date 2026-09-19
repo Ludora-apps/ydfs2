@@ -744,6 +744,39 @@ footer {
   align-items: center;
   gap: 24px;
 }
+/* The build queue, repeated in the header band so it is legible from every
+   screen. The header keeps its own fixed dark palette in both themes, so these
+   are the same literal colours as .identity and .theme-switch, not tokens. */
+.header-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 12px;
+  border: 1px solid #3a5061;
+  border-radius: 8px;
+  background: #0c1721;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+.header-queue strong {
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+}
+.header-queue .queued {
+  color: #aabdc9;
+  font-weight: 400;
+  margin-left: 4px;
+}
+.header-queue .status-dot {
+  margin-right: 7px;
+}
+.header-queue small {
+  font-size: 10px;
+  color: #8fa6b5;
+}
 .theme-switch {
   display: flex;
   padding: 3px;
