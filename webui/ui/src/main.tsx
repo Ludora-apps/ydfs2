@@ -66,6 +66,42 @@ type Source = {
   ahead: number;
   error?: string;
 };
+// One path git reports as different from HEAD. index and work are git's own
+// status letters for the two sides, because a file can be both at once — staged
+// and then edited again — and the two diffs are different things by then.
+type Change = {
+  path: string;
+  from?: string;
+  index: string;
+  work: string;
+  staged: boolean;
+  unstaged: boolean;
+  untracked: boolean;
+  conflicted: boolean;
+};
+// One open pull request from the fork towards upstream. Listing them costs a
+// call to GitHub, so they arrive on their own rather than with every
+// repository read.
+type PullRequest = {
+  number: number;
+  title: string;
+  url: string;
+  author: string;
+  head: string;
+  base: string;
+  draft: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+type PullRequests = {
+  origin: string;
+  upstream: string;
+  pulls: PullRequest[];
+  // Open pull requests upstream that came from somewhere else than this fork.
+  others: number;
+  checkedAt?: string;
+  error?: string;
+};
 // One file git could not merge. ours/theirs say whether that side still has a
 // version at all: a side that deleted the file offers "keep the deletion"
 // rather than a version to choose.
@@ -108,6 +144,11 @@ type Repository = {
   detached: boolean;
   tag: string;
   dirty: boolean;
+  // Every path that differs from HEAD, so the screen can say which files make
+  // the checkout dirty — and stage and commit them — rather than only that it
+  // is. moreChanges counts the ones past the server's listing cap.
+  changes: Change[];
+  moreChanges: number;
   local: Commit;
   upstream?: Commit;
   ahead: number;
@@ -197,6 +238,34 @@ const webURL = (url: string) => {
   const scp = /^[^/@]+@([^:]+):(.+)$/.exec(url);
   return (scp ? `https://${scp[1]}/${scp[2]}` : url).replace(/\.git$/, "");
 };
+// git's status letters, spelled out. The same letter means the same thing on
+// either side of the index, so one table serves both.
+const changeKinds: Record<string, string> = {
+  M: "modified",
+  A: "added",
+  D: "deleted",
+  R: "renamed",
+  C: "copied",
+  T: "type changed",
+  "?": "untracked",
+  U: "conflicted",
+};
+const kindOf = (letter: string) => changeKinds[letter] || "changed";
+const changeLabel = (c: Change) =>
+  c.conflicted
+    ? "unmerged — settle this one at the command line"
+    : c.untracked
+      ? "untracked"
+      : [
+          c.staged && `${kindOf(c.index)}, staged`,
+          c.unstaged && `${kindOf(c.work)}, not staged`,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+// How long the Repository screen waits before re-reading the checkout. It is a
+// local read — no network call — and it is what keeps the working-tree list
+// honest when files are committed in a terminal instead of here.
+const repoPollMs = 5000;
 const commitCard = (label: string, c?: Commit, note?: React.ReactNode) => (
   <div className="commit">
     <p className="eyebrow">{label}</p>
@@ -780,6 +849,18 @@ function App() {
   const [repo, setRepo] = useState<Repository>();
   const [repoBusy, setRepoBusy] = useState("");
   const [repoError, setRepoError] = useState("");
+  // The open pull requests upstream, and the commit message being written.
+  // Both belong to the Repository screen and to nothing else.
+  const [pulls, setPulls] = useState<PullRequests>();
+  const [pullsBusy, setPullsBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  // The background re-read must never land on top of an action in flight, so
+  // it asks the same busy flag the buttons do — through a ref, because the
+  // interval closes over its own render.
+  const repoBusyRef = useRef("");
+  useEffect(() => {
+    repoBusyRef.current = repoBusy;
+  }, [repoBusy]);
   // Where the last pull request landed. Kept out of the notice bar so the link
   // stays clickable next to the commits it came from.
   const [pullRequest, setPullRequest] = useState("");
@@ -817,6 +898,66 @@ function App() {
     } finally {
       setRepoBusy("");
     }
+  }
+  async function loadPulls(force: boolean) {
+    setPullsBusy(true);
+    try {
+      setPulls(
+        await api<PullRequests>(
+          `/repository/pulls${force ? "?refresh=1" : ""}`,
+        ),
+      );
+    } catch (e) {
+      // Keep whatever is on the screen and say why it could not be refreshed.
+      setPulls((p) => ({
+        origin: p?.origin ?? "",
+        upstream: p?.upstream ?? "",
+        pulls: p?.pulls ?? [],
+        others: p?.others ?? 0,
+        checkedAt: p?.checkedAt,
+        error: (e as Error).message,
+      }));
+    } finally {
+      setPullsBusy(false);
+    }
+  }
+  // Staging, unstaging and committing all answer with the whole screen, so the
+  // working-tree list never has to be stitched together in the browser.
+  function stage(paths: string[], on: boolean) {
+    repoAction("stage", () =>
+      api<Repository>("/repository/stage", "POST", { paths, stage: on }),
+    );
+  }
+  function stageAll(on: boolean) {
+    repoAction("stage", () =>
+      api<Repository>("/repository/stage", "POST", { all: true, stage: on }),
+    );
+  }
+  async function commitStaged() {
+    const r = await repoAction("commit", () =>
+      api<Repository>("/repository/commit", "POST", { message }),
+    );
+    if (!r) return;
+    setMessage("");
+    setNotice(`Committed ${r.local.revision.slice(0, 12)} on ${r.branch}.`);
+  }
+  // A changed file is read in the same viewer as the build log, config.ini and
+  // a conflicting file: one reader for every file on this screen.
+  function viewDiff(c: Change, side: "all" | "staged" | "worktree") {
+    setViewing({
+      key: `diff:${c.path}:${side}:${c.index}${c.work}`,
+      title: c.path,
+      subtitle:
+        side === "staged"
+          ? "staged — what a commit would record"
+          : side === "worktree"
+            ? "not staged — what a commit would leave behind"
+            : c.untracked
+              ? "untracked — the whole file is new"
+              : `all changes since ${repo?.local.revision.slice(0, 12) ?? "HEAD"}`,
+      url: `/api/repository/diff?path=${encodeURIComponent(c.path)}&side=${side}`,
+      compact: true,
+    });
   }
   // Checking and merging are the same request: the merge is replayed in a
   // worktree of its own either way, and the only difference is whether a clean
@@ -1220,6 +1361,25 @@ function App() {
       mounted = false;
     };
   }, []);
+  // The checkout is shared, and it is worked on at the command line as often as
+  // here: a file committed in a terminal must not leave this screen still
+  // listing it as uncommitted. While the Repository screen is open it re-reads
+  // the checkout — a local read, no network call — and skips the tick whenever
+  // an action of its own is in flight or the tab is in the background.
+  useEffect(() => {
+    if (page !== "repo") return;
+    const tick = () => {
+      if (document.visibilityState === "visible" && !repoBusyRef.current)
+        loadRepo(false);
+    };
+    const t = setInterval(tick, repoPollMs);
+    document.addEventListener("visibilitychange", tick);
+    loadPulls(false);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, [page]);
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState === "visible") {
@@ -1452,6 +1612,232 @@ function App() {
     </div>
   );
 
+  // The working tree: every file that differs from HEAD, staged a file at a
+  // time, then committed with a message. It sits inside the Repository box
+  // because it is about the checkout itself, above the boxes a dirty tree
+  // freezes — it is the thing standing between them and an update.
+  const changes = repo?.changes ?? [];
+  const stagedFiles = changes.filter((c) => c.staged);
+  const changesBox = repo && (
+    <section className="changes">
+      <div className="changes-head">
+        <div>
+          <p className="eyebrow">Working tree</p>
+          <strong>
+            {changes.length === 0
+              ? "No uncommitted changes"
+              : `${changes.length} changed file${changes.length === 1 ? "" : "s"}${
+                  repo.moreChanges > 0 ? ` (+${repo.moreChanges} more)` : ""
+                }`}
+          </strong>
+          <small>
+            {changes.length === 0
+              ? `Nothing to commit on ${repo.branch}.`
+              : `${stagedFiles.length} staged for the next commit on ${repo.branch}.`}
+          </small>
+        </div>
+        <div className="repo-actions">
+          <button
+            type="button"
+            className="quiet"
+            title="Re-read the checkout: what is staged, changed or untracked right now"
+            disabled={!!repoBusy}
+            onClick={() => loadRepo(false)}
+          >
+            {repoBusy === "refresh" ? "Reading…" : "↻ Refresh"}
+          </button>
+          <button
+            type="button"
+            className="quiet"
+            disabled={
+              !!repoBusy ||
+              changes.length === stagedFiles.length ||
+              !!repo.graft
+            }
+            onClick={() => stageAll(true)}
+          >
+            Stage everything
+          </button>
+          <button
+            type="button"
+            className="quiet"
+            disabled={!!repoBusy || stagedFiles.length === 0 || !!repo.graft}
+            onClick={() => stageAll(false)}
+          >
+            Unstage everything
+          </button>
+        </div>
+      </div>
+      {changes.length > 0 && (
+        <>
+          <ul className="change-list">
+            {changes.map((c) => (
+              <li key={c.path} className={c.staged ? "staged" : ""}>
+                <label className="change-stage">
+                  <input
+                    type="checkbox"
+                    checked={c.staged}
+                    aria-label={`Stage ${c.path}`}
+                    disabled={!!repoBusy || !!repo.graft}
+                    onChange={(e) => stage([c.path], e.target.checked)}
+                  />
+                </label>
+                <div className="change-file">
+                  <button
+                    type="button"
+                    className="link path"
+                    title={`Show the changes in ${c.path}`}
+                    onClick={() => viewDiff(c, "all")}
+                  >
+                    {c.from ? `${c.from} → ${c.path}` : c.path}
+                  </button>
+                  <small>{changeLabel(c)}</small>
+                </div>
+                <div className="change-views">
+                  {/* Only worth offering when the two halves differ: a file
+                      staged and then edited again is two different diffs. */}
+                  {c.staged && c.unstaged && (
+                    <>
+                      <button
+                        type="button"
+                        className="link"
+                        onClick={() => viewDiff(c, "staged")}
+                      >
+                        Staged
+                      </button>
+                      <button
+                        type="button"
+                        className="link"
+                        onClick={() => viewDiff(c, "worktree")}
+                      >
+                        Not staged
+                      </button>
+                    </>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+          {repo.moreChanges > 0 && (
+            <p className="hint">
+              {repo.moreChanges} further changed file(s) are not listed. “Stage
+              everything” still covers them.
+            </p>
+          )}
+          <div className="commit-form">
+            <label className="sr-only" htmlFor="commit-message">
+              Commit message
+            </label>
+            <textarea
+              id="commit-message"
+              rows={2}
+              placeholder="Commit message"
+              value={message}
+              disabled={!!repoBusy || !!repo.graft}
+              onChange={(e) => setMessage(e.target.value)}
+            />
+            <button
+              type="button"
+              className="update"
+              title={
+                repo.graft
+                  ? "Finish or abandon the merge being resolved first"
+                  : `Record the staged files on ${repo.branch}`
+              }
+              disabled={
+                !!repoBusy ||
+                !!repo.graft ||
+                stagedFiles.length === 0 ||
+                message.trim() === ""
+              }
+              onClick={commitStaged}
+            >
+              {repoBusy === "commit"
+                ? "Committing…"
+                : `Commit ${stagedFiles.length} file(s)`}
+            </button>
+          </div>
+          <p className="hint">
+            Only the ticked files are committed, on {repo.branch} in this
+            checkout. Publishing them on {repo.github?.origin || "the fork"}{" "}
+            stays the Push button’s job above. Queued and running builds keep
+            the snapshot they were submitted with.
+          </p>
+        </>
+      )}
+    </section>
+  );
+
+  // Open pull requests from this fork towards upstream. Listing them is the one
+  // repository read that reaches GitHub, so it arrives on its own and carries
+  // its own refresh rather than riding on the 5s poll.
+  const pullsBox = (
+    <section className="pulls">
+      <div className="changes-head">
+        <div>
+          <p className="eyebrow">Open pull requests</p>
+          <strong>
+            {pulls?.origin && pulls?.upstream
+              ? `${pulls.origin} → ${pulls.upstream}`
+              : "Towards upstream"}
+          </strong>
+          <small>
+            {pulls?.checkedAt
+              ? `checked ${date(pulls.checkedAt)}`
+              : "not read yet"}
+            {pulls &&
+              pulls.others > 0 &&
+              ` · ${pulls.others} more open upstream from other forks`}
+          </small>
+        </div>
+        <div className="repo-actions">
+          <button
+            type="button"
+            className="quiet"
+            disabled={pullsBusy}
+            onClick={() => loadPulls(true)}
+          >
+            {pullsBusy ? "Reading…" : "↻ Refresh"}
+          </button>
+        </div>
+      </div>
+      {pulls?.error && <p className="hint error">{pulls.error}</p>}
+      <ol className="commit-list">
+        {(pulls?.pulls ?? []).map((p) => (
+          <li key={p.number}>
+            <div>
+              <strong title={p.title}>
+                {p.draft && <span className="draft">draft</span>}
+                {p.title}
+              </strong>
+              <small>
+                <code>#{p.number}</code> · {p.author} · {p.head} → {p.base} ·
+                updated {date(p.updatedAt)}
+              </small>
+            </div>
+            <div className="commit-actions">
+              <a
+                className="quiet"
+                href={p.url}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open ↗
+              </a>
+            </div>
+          </li>
+        ))}
+        {(pulls?.pulls ?? []).length === 0 && !pulls?.error && (
+          <li className="pending">
+            {pullsBusy
+              ? "Reading GitHub…"
+              : `Nothing from ${pulls?.origin || "this fork"} is open upstream right now.`}
+          </li>
+        )}
+      </ol>
+    </section>
+  );
+
   // The merge or cherry-pick waiting to be resolved. It lives inside the
   // Repository box, above the source boxes it froze, because it is about the
   // checkout rather than about any one repository.
@@ -1639,9 +2025,11 @@ function App() {
                   ? `${repo.github.origin} has ${repo.forkBehind} commit(s) this checkout does not`
                   : `Publish ${repo.branch} on ${repo.github.origin}`
               }
+              // A dirty checkout is no reason to refuse a push: it publishes
+              // commits, not the working tree. Committing part of the tree
+              // below and pushing it is the ordinary way to work here.
               disabled={
                 !!repoBusy ||
-                repo.dirty ||
                 repo.detached ||
                 repo.forkBehind > 0 ||
                 (repo.forkTracked && repo.forkAhead === 0) ||
@@ -1742,8 +2130,10 @@ function App() {
           </a>
         </p>
       )}
+      {changesBox}
       {graftBox}
       {repoSources}
+      {pullsBox}
     </section>
   );
 

@@ -1106,6 +1106,164 @@ footer {
 .graft-views .link:hover {
   opacity: 0.8;
 }
+/* The working tree, and the open pull requests, inside the Repository box.
+   Both reuse the card vocabulary above: a heading with its own actions, then a
+   list. .change-list is the one list on this screen whose rows are ticked. */
+.changes,
+.pulls {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid var(--subtle-border);
+  border-radius: 10px;
+  background: var(--input);
+}
+.changes-head {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.changes-head strong {
+  display: block;
+  font-size: 13px;
+  margin-top: 2px;
+}
+.changes-head small {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.change-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.change-list li {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 7px 0;
+  border-top: 1px solid var(--subtle-border);
+  min-width: 0;
+}
+.change-list li:first-child {
+  border-top: 0;
+}
+.change-stage {
+  flex: none;
+  display: flex;
+  align-items: center;
+}
+.change-stage input {
+  width: 15px;
+  height: 15px;
+  accent-color: #198267;
+  cursor: pointer;
+}
+.change-file {
+  flex: 1;
+  min-width: 0;
+}
+/* The path is a reading affordance, not an action: it opens the diff in the
+   same viewer the build log uses. */
+.change-file .link,
+.change-views .link {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--accent-text);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.change-file .link.path {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font:
+    12px ui-monospace,
+    SFMono-Regular,
+    Consolas,
+    monospace;
+}
+.change-file .link:hover,
+.change-views .link:hover {
+  opacity: 0.8;
+}
+.change-file small {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--muted);
+}
+/* A staged row is the one that is going somewhere, so it is the one marked. */
+.change-list li.staged .change-file small {
+  color: var(--accent-text);
+}
+.change-views {
+  flex: none;
+  display: flex;
+  gap: 10px;
+  font-size: 10px;
+}
+.commit-form {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-top: 12px;
+}
+.commit-form textarea {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  resize: vertical;
+}
+.commit-form .update {
+  flex: none;
+  border: 0;
+  border-radius: 7px;
+  padding: 9px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  background: #198267;
+  color: #fff;
+}
+.commit-form .update:hover:enabled {
+  background: #126b55;
+}
+/* .hint carries a negative top margin for the form rows it usually follows;
+   here it follows a textarea, which it would otherwise sit on top of. */
+.changes .hint {
+  margin-top: 12px;
+}
+.pulls .commit-list {
+  max-height: 300px;
+}
+.pulls .commit-list a.quiet {
+  text-decoration: none;
+  padding: 5px 9px;
+  font-size: 10px;
+}
+.pulls .draft {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 9px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.pulls .hint.error {
+  margin-top: 10px;
+}
+
 /* Confirmation modal. The app never uses window.confirm/alert, so this is the
    single dialog pattern: <dialog> supplies the focus trap, Escape and backdrop,
    and the tokens keep it in the app's theme. */

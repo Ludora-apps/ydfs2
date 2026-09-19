@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os/exec"
@@ -317,10 +318,10 @@ func (a *App) repositoryPush(w http.ResponseWriter, r *http.Request) {
 		fail(w, 409, "this checkout is on a detached HEAD; switch to a branch before pushing")
 		return
 	}
-	if status, e := a.git(ctx, "status", "--porcelain"); e == nil && status != "" {
-		fail(w, 409, "the checkout has uncommitted changes; commit or discard them before pushing")
-		return
-	}
+	// A dirty working tree is deliberately no obstacle here: a push publishes
+	// commits, and what is still uncommitted is by definition not among them.
+	// Committing part of the tree from the Repository screen and pushing the
+	// result, with the rest still in progress, is the ordinary way to work.
 	branch := a.branch(ctx)
 	head, e := a.git(ctx, "rev-parse", "HEAD")
 	if e != nil {
@@ -346,4 +347,131 @@ func (a *App) repositoryPush(w http.ResponseWriter, r *http.Request) {
 		_ = e
 	}
 	a.respondRepository(w, ctx, "")
+}
+
+// Open pull requests from the fork towards the fixed upstream — the ones this
+// screen's PR buttons have been opening, plus any opened elsewhere from the
+// same fork, so the Repository screen can say what is already proposed instead
+// of leaving a person to check GitHub.
+//
+// This is the one repository read that costs a network call, so it is NOT part
+// of state(): it has an endpoint of its own, asked for when the screen opens
+// and when someone presses Refresh, and a short-lived cache so switching
+// screens does not hit GitHub again.
+
+// pullsFresh is how long a listing is reused before GitHub is asked again.
+const pullsFresh = 30 * time.Second
+
+// pullsLimit is how many open pull requests are read; a fork with more than
+// this many open at once is not a case this screen has to page through.
+const pullsLimit = 100
+
+type PullRequest struct {
+	Number    int    `json:"number"`
+	Title     string `json:"title"`
+	URL       string `json:"url"`
+	Author    string `json:"author"`
+	Head      string `json:"head"` // the branch on the fork
+	Base      string `json:"base"` // the upstream branch it targets
+	Draft     bool   `json:"draft"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
+}
+
+// PullRequests is the whole box: what was found, where it came from, and why
+// it is empty when it is.
+type PullRequests struct {
+	Origin   string        `json:"origin"`
+	Upstream string        `json:"upstream"`
+	Pulls    []PullRequest `json:"pulls"`
+	// Others counts open pull requests upstream that came from somewhere else
+	// than this fork: not this screen's business, but worth saying so that an
+	// empty list never reads as "nothing is open upstream".
+	Others    int    `json:"others"`
+	CheckedAt string `json:"checkedAt,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// ghPull is the slice of GitHub's pull request object this screen uses.
+type ghPull struct {
+	Number    int    `json:"number"`
+	Title     string `json:"title"`
+	HTMLURL   string `json:"html_url"`
+	Draft     bool   `json:"draft"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+	User      struct {
+		Login string `json:"login"`
+	} `json:"user"`
+	Head struct {
+		Ref  string `json:"ref"`
+		Repo *struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
+	} `json:"head"`
+	Base struct {
+		Ref string `json:"ref"`
+	} `json:"base"`
+}
+
+// pulls asks GitHub for the open pull requests on upstream and keeps the ones
+// whose branch lives on this checkout's fork.
+func (a *App) pulls(ctx context.Context) *PullRequests {
+	gh := a.github(ctx)
+	if gh == nil {
+		return &PullRequests{Error: "this checkout has no origin remote, so it has no pull requests to list"}
+	}
+	p := &PullRequests{Origin: gh.Origin, Upstream: gh.Upstream}
+	if !gh.Available {
+		p.Error = gh.Error
+		return p
+	}
+	out, e := a.ghAPI(ctx, "repos/"+gh.Upstream+"/pulls?state=open&sort=updated&direction=desc&per_page="+strconv.Itoa(pullsLimit))
+	if e != nil {
+		p.Error = "cannot list pull requests: " + e.Error()
+		return p
+	}
+	var list []ghPull
+	if e := json.Unmarshal([]byte(out), &list); e != nil {
+		p.Error = "cannot read the pull request list from GitHub"
+		return p
+	}
+	for _, g := range list {
+		// A pull request whose fork has since been deleted carries no head
+		// repository at all; it cannot be one of this fork's either way.
+		if g.Head.Repo == nil || !strings.EqualFold(g.Head.Repo.FullName, gh.Origin) {
+			p.Others++
+			continue
+		}
+		p.Pulls = append(p.Pulls, PullRequest{Number: g.Number, Title: g.Title, URL: g.HTMLURL,
+			Author: g.User.Login, Head: g.Head.Ref, Base: g.Base.Ref, Draft: g.Draft,
+			CreatedAt: g.CreatedAt, UpdatedAt: g.UpdatedAt})
+	}
+	p.CheckedAt = time.Now().UTC().Format(time.RFC3339)
+	return p
+}
+
+// repositoryPulls serves that listing, from the cache unless it has gone stale
+// or the browser asked for a fresh one.
+func (a *App) repositoryPulls(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	force := r.URL.Query().Get("refresh") == "1"
+	a.pullsMu.Lock()
+	defer a.pullsMu.Unlock()
+	if !force && a.pullList != nil && time.Since(a.pullsAt) < pullsFresh {
+		respond(w, a.pullList)
+		return
+	}
+	p := a.pulls(ctx)
+	// A failed refresh must not throw away a listing that was good a moment
+	// ago: report the failure against what is still on the screen.
+	if p.Error != "" && a.pullList != nil {
+		kept := *a.pullList
+		kept.Error = p.Error
+		respond(w, &kept)
+		return
+	}
+	a.pullList, a.pullsAt = p, time.Now()
+	respond(w, p)
 }

@@ -74,15 +74,21 @@ type Source struct {
 	Error string `json:"error,omitempty"`
 }
 type Repository struct {
-	URL      string  `json:"url"`
-	Branch   string  `json:"branch"`
-	Detached bool    `json:"detached"`
-	Tag      string  `json:"tag"`
-	Dirty    bool    `json:"dirty"`
-	Local    Commit  `json:"local"`
-	Upstream *Commit `json:"upstream,omitempty"`
-	Ahead    int     `json:"ahead"`
-	Behind   int     `json:"behind"`
+	URL      string `json:"url"`
+	Branch   string `json:"branch"`
+	Detached bool   `json:"detached"`
+	Tag      string `json:"tag"`
+	Dirty    bool   `json:"dirty"`
+	// Changes is the working tree as git sees it — one entry per path that
+	// differs from HEAD — so the screen can say which files make it dirty,
+	// stage them and commit them, rather than only that it is. MoreChanges
+	// counts the ones past the listing cap (see maxChanges).
+	Changes     []Change `json:"changes"`
+	MoreChanges int      `json:"moreChanges"`
+	Local       Commit   `json:"local"`
+	Upstream    *Commit  `json:"upstream,omitempty"`
+	Ahead       int      `json:"ahead"`
+	Behind      int      `json:"behind"`
 	// Fork* is the same comparison against the fork's copy of this branch,
 	// which is what a push would publish. It is a different number from
 	// Ahead/Behind — a checkout fully pushed to its fork is still every one of
@@ -111,9 +117,7 @@ type Repository struct {
 // conflict is being resolved in (see graft.go). env carries extra variables —
 // a credential for a push, never anything that would show up in argv.
 func (a *App) gitRaw(ctx context.Context, dir string, env []string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=", "GIT_SSH_COMMAND=ssh -oBatchMode=yes")
-	cmd.Env = append(cmd.Env, env...)
+	cmd := a.gitCmd(ctx, dir, env, args...)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, e := cmd.Output()
@@ -124,6 +128,16 @@ func (a *App) gitRaw(ctx context.Context, dir string, env []string, args ...stri
 		return nil, e
 	}
 	return out, nil
+}
+
+// gitCmd prepares that command without running it, for the one caller that
+// has to read git's exit status itself rather than treat it as a failure (see
+// diffText in changes.go).
+func (a *App) gitCmd(ctx context.Context, dir string, env []string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=", "GIT_SSH_COMMAND=ssh -oBatchMode=yes")
+	cmd.Env = append(cmd.Env, env...)
+	return cmd
 }
 
 // gitAt is gitRaw with the output trimmed, which is what every caller reading a
@@ -330,8 +344,9 @@ func (a *App) state(ctx context.Context) (*Repository, error) {
 	}
 	r := &Repository{URL: a.upstreamRemote(), Branch: a.branch(ctx), Detached: a.detached(ctx), Local: local}
 	r.Tag, _ = a.git(ctx, "describe", "--tags", "--abbrev=0")
-	if status, e := a.git(ctx, "status", "--porcelain"); e == nil {
-		r.Dirty = status != ""
+	if list, more, e := a.changes(ctx); e == nil {
+		r.Changes, r.MoreChanges = list, more
+		r.Dirty = len(list) > 0 || more > 0
 	}
 	a.repoMu.Lock()
 	up, checkedAt, originErr := a.upstream, a.upstreamAt, a.originError

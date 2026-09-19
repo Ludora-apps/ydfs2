@@ -20,6 +20,8 @@ async function fixture(
     detached: false,
     tag: "2026",
     dirty: false,
+    changes: [],
+    moreChanges: 0,
     local: commit("a".repeat(40), "local head"),
     ahead: 0,
     behind: 0,
@@ -222,6 +224,28 @@ async function fixture(
         body: "ISO fixture",
       });
     if (path.startsWith("/api/repository")) {
+      // The open pull requests are the one repository read that costs a call
+      // to GitHub, so they have an endpoint of their own.
+      if (path === "/api/repository/pulls")
+        return json({
+          origin: "Ludora-apps/ydfs2",
+          upstream: "linuxconsole-org/ydfs2",
+          others: 2,
+          checkedAt: "2026-09-18T11:00:00Z",
+          pulls: [
+            {
+              number: 12,
+              title: "fix mate build",
+              url: "https://github.com/linuxconsole-org/ydfs2/pull/12",
+              author: "boyquotes",
+              head: "ydfs-web/single-abc123",
+              base: "2.12",
+              draft: false,
+              createdAt: "2026-09-17T10:00:00Z",
+              updatedAt: "2026-09-18T10:00:00Z",
+            },
+          ],
+        });
       if (path === "/api/repository/commits") {
         const ref = new URL(req.url()).searchParams.get("ref");
         const known = repository.sources.find((s) => s.selected === ref);
@@ -851,4 +875,165 @@ test("the header carries the build queue on every screen", async ({ page }) => {
   await expect(header).toBeVisible();
   await open(page, "Logs");
   await expect(header).toBeVisible();
+});
+
+// The working tree: what is uncommitted is listed, read in the shared viewer,
+// staged a file at a time and committed — and the list re-reads itself, so a
+// commit made in a terminal does not leave it claiming the tree is still dirty.
+test("uncommitted files are listed, diffed, staged and committed", async ({
+  page,
+}) => {
+  await fixture(page);
+  page.on("dialog", () => {
+    throw new Error("the app opened a native browser dialog");
+  });
+  const file = (path: string, staged: boolean, untracked = false) => ({
+    path,
+    index: staged ? "M" : " ",
+    work: staged ? " " : untracked ? "?" : "M",
+    staged,
+    unstaged: !staged,
+    untracked,
+    conflicted: false,
+  });
+  let changes = [
+    file("2.12/scripts/make_iso", false),
+    file("webui/notes.txt", false, true),
+  ];
+  let head = {
+    revision: "a".repeat(40),
+    subject: "local head",
+    author: "tester",
+    date: "2026-09-18T10:00:00Z",
+  };
+  let committed = "";
+  const state = () => ({
+    url: "https://github.com/linuxconsole-org/ydfs2",
+    branch: "2.12",
+    detached: false,
+    tag: "2026",
+    dirty: changes.length > 0,
+    changes,
+    moreChanges: 0,
+    local: head,
+    ahead: 0,
+    behind: 0,
+    fastForward: true,
+    github: {
+      available: true,
+      origin: "Ludora-apps/ydfs2",
+      upstream: "linuxconsole-org/ydfs2",
+      base: "2.12",
+    },
+    sources: [],
+  });
+  await page.route("**/api/repository**", async (route) => {
+    const req = route.request();
+    const url = new URL(req.url());
+    const json = (v: unknown) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(v),
+      });
+    if (url.pathname === "/api/repository/diff")
+      return route.fulfill({
+        status: 200,
+        contentType: "text/plain",
+        body: `--- a/${url.searchParams.get("path")}\n+++ b/${url.searchParams.get("path")}\n+one new line\n`,
+      });
+    if (url.pathname === "/api/repository/stage") {
+      const body = req.postDataJSON();
+      changes = changes.map((c) =>
+        body.all || body.paths.includes(c.path)
+          ? file(c.path, body.stage, c.untracked)
+          : c,
+      );
+      return json(state());
+    }
+    if (url.pathname === "/api/repository/commit") {
+      committed = req.postDataJSON().message;
+      changes = changes.filter((c) => !c.staged);
+      head = { ...head, revision: "f".repeat(40), subject: committed };
+      return json(state());
+    }
+    if (url.pathname === "/api/repository/pulls")
+      return json({
+        origin: "Ludora-apps/ydfs2",
+        upstream: "linuxconsole-org/ydfs2",
+        others: 0,
+        checkedAt: "2026-09-18T11:00:00Z",
+        pulls: [],
+      });
+    return json(state());
+  });
+  await open(page, "Repository");
+  const tree = page.locator("section.changes");
+  // Refresh re-reads the checkout on demand, which is what makes work done at
+  // the command line show up here without a reload.
+  await tree.getByRole("button", { name: "↻ Refresh" }).click();
+  await expect(tree).toContainText("2 changed files");
+  await expect(tree).toContainText("0 staged");
+  await expect(tree.locator(".change-list li")).toHaveCount(2);
+  await expect(tree).toContainText("untracked");
+
+  // The file opens in the same viewer as the build log — never a browser tab.
+  await tree.getByRole("button", { name: "2.12/scripts/make_iso" }).click();
+  const viewer = page.getByRole("dialog");
+  await expect(viewer).toContainText("all changes since");
+  await expect(page.getByLabel("File contents")).toContainText("+one new line");
+  await page.keyboard.press("Escape");
+  await expect(viewer).toBeHidden();
+
+  // Nothing is staged yet, so there is nothing to commit.
+  const commitButton = tree.getByRole("button", { name: /^Commit/ });
+  await expect(commitButton).toBeDisabled();
+  // A controlled checkbox: it only ticks once the server has answered with the
+  // tree the staging produced, so the click is the action and the tick is the
+  // result — never the other way round.
+  const tick = tree.getByLabel("Stage 2.12/scripts/make_iso");
+  await tick.click();
+  await expect(tick).toBeChecked();
+  await expect(tree).toContainText("1 staged");
+  // A message is still required.
+  await expect(commitButton).toBeDisabled();
+  await tree.getByPlaceholder("Commit message").fill("tidy make_iso");
+  await expect(commitButton).toBeEnabled();
+  await commitButton.click();
+  await expect(page.getByText("Committed ffffffffffff on 2.12")).toBeVisible();
+  expect(committed).toBe("tidy make_iso");
+  // Only the staged file went in; the untracked one is still waiting.
+  await expect(tree).toContainText("1 changed file");
+  await expect(tree.locator(".change-list li")).toHaveCount(1);
+
+  // And the screen re-reads the checkout on its own: a commit made at the
+  // command line clears the list without anyone pressing anything.
+  changes = [];
+  await expect(tree).toContainText("No uncommitted changes", {
+    timeout: 15000,
+  });
+});
+
+// Pull requests already open from this fork are listed on the same screen, so
+// nobody has to go to GitHub to find out what is proposed.
+test("open pull requests from the fork are listed and refreshable", async ({
+  page,
+}) => {
+  await fixture(page);
+  await open(page, "Repository");
+  const box = page.locator("section.pulls");
+  await expect(box).toContainText("Ludora-apps/ydfs2 → linuxconsole-org/ydfs2");
+  await expect(box).toContainText("fix mate build");
+  await expect(box).toContainText("ydfs-web/single-abc123 → 2.12");
+  await expect(box).toContainText("2 more open upstream from other forks");
+  await expect(box.getByRole("link", { name: "Open ↗" })).toHaveAttribute(
+    "href",
+    "https://github.com/linuxconsole-org/ydfs2/pull/12",
+  );
+  // Refresh asks GitHub again rather than serving the cached listing.
+  const asked = page.waitForRequest((r) =>
+    r.url().includes("/api/repository/pulls?refresh=1"),
+  );
+  await box.getByRole("button", { name: "↻ Refresh" }).click();
+  await asked;
 });

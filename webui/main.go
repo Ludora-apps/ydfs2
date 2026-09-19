@@ -65,6 +65,12 @@ type App struct {
 	graftMu sync.Mutex
 	graft   *Graft
 	gh      string
+	// The open pull requests upstream, as last read from GitHub. Its own lock:
+	// it is the one repository read that costs a network call, so it is kept
+	// out of state() and cached briefly (see pr.go).
+	pullsMu  sync.Mutex
+	pullList *PullRequests
+	pullsAt  time.Time
 }
 
 func main() {
@@ -265,6 +271,10 @@ func (a *App) handler() http.Handler {
 	mux.HandleFunc("GET /api/repository/graft/file", a.graftFile)
 	mux.HandleFunc("POST /api/repository/push", a.repositoryPush)
 	mux.HandleFunc("POST /api/repository/pr", a.repositoryPR)
+	mux.HandleFunc("GET /api/repository/pulls", a.repositoryPulls)
+	mux.HandleFunc("GET /api/repository/diff", a.repositoryDiff)
+	mux.HandleFunc("POST /api/repository/stage", a.repositoryStage)
+	mux.HandleFunc("POST /api/repository/commit", a.repositoryCommit)
 	mux.HandleFunc("GET /api/flathub", a.flathubCatalogue)
 	mux.HandleFunc("POST /api/flathub/refresh", a.flathubRefresh)
 	mux.HandleFunc("GET /api/jobs", func(w http.ResponseWriter, r *http.Request) {
