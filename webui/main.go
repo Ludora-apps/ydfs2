@@ -37,6 +37,7 @@ type App struct {
 	upstreamFrom               string
 	upstream                   *Commit
 	upstreamAt                 time.Time
+	originError                string
 	flathubMu                  sync.Mutex
 	flathubFrom                string
 	flathub                    *FlathubCatalogue
@@ -210,6 +211,8 @@ func (a *App) handler() http.Handler {
 	mux.HandleFunc("GET /api/repository", a.repository)
 	mux.HandleFunc("POST /api/repository/check", a.repositoryCheck)
 	mux.HandleFunc("POST /api/repository/update", a.repositoryUpdate)
+	mux.HandleFunc("GET /api/repository/commits", a.repositoryCommits)
+	mux.HandleFunc("POST /api/repository/checkout", a.repositoryCheckout)
 	mux.HandleFunc("GET /api/flathub", a.flathubCatalogue)
 	mux.HandleFunc("POST /api/flathub/refresh", a.flathubRefresh)
 	mux.HandleFunc("GET /api/jobs", func(w http.ResponseWriter, r *http.Request) {

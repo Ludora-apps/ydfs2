@@ -282,8 +282,7 @@ textarea {
 }
 textarea.code {
   font-family:
-    ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono",
-    monospace;
+    ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   font-size: 12px;
 }
 input:focus,
@@ -850,6 +849,114 @@ footer {
 .repo-status.error {
   color: var(--danger-text);
 }
+/* One box per repository the checkout can be moved to. Same card vocabulary as
+   .commit above, with a branch picker and a scrolling commit list. */
+.repo-sources {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+.repo-source {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--subtle-border);
+  background: var(--input);
+  border-radius: 9px;
+  padding: 14px 16px;
+  min-width: 0;
+}
+/* A plain div, not <header>: the page banner owns the bare header selector. */
+.repo-source-head {
+  min-width: 0;
+  margin-bottom: 10px;
+}
+.repo-source-head .eyebrow {
+  margin-bottom: 6px;
+}
+.repo-source-head a,
+.repo-source-head strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.repo-source-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.repo-source-actions select {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  padding: 6px 8px;
+}
+.repo-source-actions .quiet {
+  flex: none;
+  padding: 7px 10px;
+  font-size: 11px;
+}
+.repo-source .hint.error {
+  color: var(--danger-text);
+  font-size: 11px;
+}
+.commit-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.commit-list li {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 0;
+  border-top: 1px solid var(--subtle-border);
+  min-width: 0;
+}
+.commit-list li:first-child {
+  border-top: 0;
+}
+.commit-list li > div {
+  min-width: 0;
+}
+.commit-list strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.commit-list small {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.commit-list code {
+  font:
+    10px ui-monospace,
+    SFMono-Regular,
+    Consolas,
+    monospace;
+  color: var(--accent-text);
+}
+.commit-list .quiet {
+  flex: none;
+  padding: 5px 9px;
+  font-size: 10px;
+}
+.commit-list .pending {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+}
 /* Confirmation modal. The app never uses window.confirm/alert, so this is the
    single dialog pattern: <dialog> supplies the focus trap, Escape and backdrop,
    and the tokens keep it in the app's theme. */
@@ -1230,6 +1337,9 @@ footer {
 }
 @media (max-width: 740px) {
   .commits {
+    grid-template-columns: 1fr;
+  }
+  .repo-sources {
     grid-template-columns: 1fr;
   }
   .apps {

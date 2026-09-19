@@ -1047,6 +1047,120 @@ func TestRepositoryUpdate(t *testing.T) {
 	}
 }
 
+func find(t *testing.T, s Repository, name string) Source {
+	t.Helper()
+	for _, src := range s.Sources {
+		if src.Name == name {
+			return src
+		}
+	}
+	t.Fatalf("no %q source in %+v", name, s.Sources)
+	return Source{}
+}
+func TestRepositoryCheckout(t *testing.T) {
+	a := testApp(t)
+	origin := t.TempDir()
+	gitFixture(t, origin, "init", "-b", defaultBranch)
+	putFile(t, filepath.Join(origin, sourceDir, "Makefile"), "all:\n")
+	gitFixture(t, origin, "add", ".")
+	gitFixture(t, origin, "commit", "-m", "first")
+	// A sibling release branch, buildable like the current one.
+	gitFixture(t, origin, "switch", "-c", "2.13")
+	putFile(t, filepath.Join(origin, sourceDir, "Makefile"), "all:\n\t@true\n")
+	gitFixture(t, origin, "commit", "-am", "next release")
+	// A branch whose tree the build manager cannot build.
+	gitFixture(t, origin, "switch", "--orphan", "3.0")
+	putFile(t, filepath.Join(origin, "README"), "rewritten layout\n")
+	gitFixture(t, origin, "add", ".")
+	gitFixture(t, origin, "commit", "-m", "rewritten layout")
+	gitFixture(t, origin, "switch", defaultBranch)
+	gitFixture(t, t.TempDir(), "clone", origin, a.repo)
+	a.upstreamFrom = origin
+
+	var s Repository
+	if w := request(a, "GET", "/api/repository", ""); w.Code != 200 {
+		t.Fatalf("state: %d %s", w.Code, w.Body)
+	} else if json.Unmarshal(w.Body.Bytes(), &s); s.Detached {
+		t.Fatalf("fresh clone reported detached: %+v", s)
+	}
+	local, fork := find(t, s, "local"), find(t, s, originRemote)
+	if len(local.Commits) == 0 || local.Selected != defaultBranch {
+		t.Fatalf("unexpected local source %+v", local)
+	}
+	seen := map[string]bool{}
+	for _, b := range fork.Branches {
+		seen[b.Name] = b.Buildable
+	}
+	if !seen["2.13"] || seen["3.0"] || len(fork.Commits) == 0 || len(fork.Commits) > commitCount {
+		t.Fatalf("unexpected fork source %+v", fork)
+	}
+	// A branch without the source tree is listed, never switched to.
+	if w := request(a, "POST", "/api/repository/checkout", `{"ref":"origin/3.0"}`); w.Code != 409 {
+		t.Fatalf("unbuildable checkout: %d %s", w.Code, w.Body)
+	}
+	// Nothing the boxes did not offer is a revision, however well formed.
+	for _, ref := range []string{`"origin/nope"`, `"../../etc"`, `""`} {
+		if w := request(a, "POST", "/api/repository/checkout", `{"ref":`+ref+`}`); w.Code != 400 {
+			t.Fatalf("checkout %s: %d %s", ref, w.Code, w.Body)
+		}
+	}
+	// A dirty checkout must not be switched out from under the operator.
+	putFile(t, filepath.Join(a.repo, sourceDir, "Makefile"), "dirty\n")
+	if w := request(a, "POST", "/api/repository/checkout", `{"ref":"origin/2.13"}`); w.Code != 409 {
+		t.Fatalf("dirty checkout: %d %s", w.Code, w.Body)
+	}
+	gitFixture(t, a.repo, "checkout", "--", ".")
+	// A remote branch becomes a local tracking branch, so GIT_BRANCH stays valid.
+	if w := request(a, "POST", "/api/repository/checkout", `{"ref":"origin/2.13"}`); w.Code != 200 {
+		t.Fatalf("checkout: %d %s", w.Code, w.Body)
+	} else if json.Unmarshal(w.Body.Bytes(), &s); s.Branch != "2.13" || s.Detached {
+		t.Fatalf("unexpected state after checkout %+v", s)
+	}
+	if out, e := a.git(context.Background(), "rev-parse", "--abbrev-ref", "HEAD"); e != nil || out != "2.13" {
+		t.Fatalf("working tree not on the branch: %q %v", out, e)
+	}
+	// A commit from one of the lists is reachable too, detached and flagged.
+	first := find(t, s, "local").Commits
+	if len(first) == 0 {
+		t.Fatal("no commits listed for the checkout")
+	}
+	rev := first[len(first)-1].Revision
+	if w := request(a, "POST", "/api/repository/checkout", `{"ref":"`+rev+`"}`); w.Code != 200 {
+		t.Fatalf("detached checkout: %d %s", w.Code, w.Body)
+	} else if json.Unmarshal(w.Body.Bytes(), &s); !s.Detached || s.Local.Revision != rev {
+		t.Fatalf("unexpected state after detaching %+v", s)
+	}
+	if b := find(t, s, "local").Branches; len(b) == 0 || b[0].Ref != "HEAD" || !b[0].Current {
+		t.Fatalf("detached checkout has no head to list: %+v", b)
+	}
+	// Picking another branch in a box lists its commits without any network call.
+	if w := request(a, "GET", "/api/repository/commits?ref=origin/3.0", ""); w.Code != 200 {
+		t.Fatalf("commits: %d %s", w.Code, w.Body)
+	} else {
+		var got struct {
+			Selected string
+			Commits  []Commit
+		}
+		json.Unmarshal(w.Body.Bytes(), &got)
+		if got.Selected != "origin/3.0" || len(got.Commits) != 1 {
+			t.Fatalf("unexpected commits %+v", got)
+		}
+	}
+	if w := request(a, "GET", "/api/repository/commits?ref=origin/nope", ""); w.Code != 400 {
+		t.Fatalf("unknown commits: %d %s", w.Code, w.Body)
+	}
+	// The check fills the upstream box with branches of its own, by ref and not
+	// by network, and leaves the fork reachable.
+	if w := request(a, "POST", "/api/repository/check", ""); w.Code != 200 {
+		t.Fatalf("check: %d %s", w.Code, w.Body)
+	}
+	json.Unmarshal(request(a, "GET", "/api/repository", "").Body.Bytes(), &s)
+	up := find(t, s, upstreamRemoteName)
+	if len(up.Branches) < 3 || len(up.Commits) == 0 || up.Error != "" {
+		t.Fatalf("unexpected upstream source %+v", up)
+	}
+}
+
 // A WebSocket handshake is a GET, so handler()'s CSRF check does not see it and
 // a browser cannot be made to send X-Requested-With on one. Origin is the only
 // thing standing between an operator's other tabs and a live console.

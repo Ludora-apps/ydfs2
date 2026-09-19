@@ -45,9 +45,27 @@ type Commit = {
   author: string;
   date: string;
 };
+type Branch = {
+  name: string;
+  // What /repository/checkout is asked for: "2.12" locally, "origin/2.12" on a
+  // remote. Buildable says the tree carries the 2.12/ directory a build needs.
+  ref: string;
+  current: boolean;
+  buildable: boolean;
+};
+type Source = {
+  name: string;
+  label: string;
+  url: string;
+  selected: string;
+  branches: Branch[];
+  commits: Commit[];
+  error?: string;
+};
 type Repository = {
   url: string;
   branch: string;
+  detached: boolean;
   tag: string;
   dirty: boolean;
   local: Commit;
@@ -56,6 +74,7 @@ type Repository = {
   behind: number;
   fastForward: boolean;
   checkedAt?: string;
+  sources: Source[];
 };
 type Capabilities = {
   targets: string[];
@@ -120,6 +139,12 @@ const bytes = (n: number) =>
       : // Logs are routinely kilobytes; without this they all read "0.0 MB".
         `${Math.max(1, Math.round(n / 2 ** 10))} KB`;
 const date = (s?: string) => (s ? new Date(s).toLocaleString() : "—");
+// Remote URLs are often scp-style (git@github.com:owner/name.git), which no
+// browser can open; show the https page they stand for instead.
+const webURL = (url: string) => {
+  const scp = /^[^/@]+@([^:]+):(.+)$/.exec(url);
+  return (scp ? `https://${scp[1]}/${scp[2]}` : url).replace(/\.git$/, "");
+};
 const commitCard = (label: string, c?: Commit, note?: React.ReactNode) => (
   <div className="commit">
     <p className="eyebrow">{label}</p>
@@ -163,13 +188,38 @@ type PageId =
   | "activity";
 const menu: { id: PageId; label: string; icon: string; hint: string }[] = [
   { id: "repo", label: "Repository", icon: "◆", hint: "checkout and upstream" },
-  { id: "favorites", label: "Kept builds", icon: "★", hint: "never cleaned up" },
+  {
+    id: "favorites",
+    label: "Kept builds",
+    icon: "★",
+    hint: "never cleaned up",
+  },
   { id: "build", label: "New build", icon: "＋", hint: "configure and queue" },
-  { id: "launch", label: "Launch", icon: "▶", hint: "boot an ISO in the browser" },
-  { id: "flatpak", label: "Flatpak", icon: "▦", hint: "applications in the ISO" },
+  {
+    id: "launch",
+    label: "Launch",
+    icon: "▶",
+    hint: "boot an ISO in the browser",
+  },
+  {
+    id: "flatpak",
+    label: "Flatpak",
+    icon: "▦",
+    hint: "applications in the ISO",
+  },
   { id: "logs", label: "Logs", icon: "▤", hint: "every build log" },
-  { id: "profiles", label: "Saved profiles", icon: "☰", hint: "reusable settings" },
-  { id: "activity", label: "Build activity", icon: "◷", hint: "queue and history" },
+  {
+    id: "profiles",
+    label: "Saved profiles",
+    icon: "☰",
+    hint: "reusable settings",
+  },
+  {
+    id: "activity",
+    label: "Build activity",
+    icon: "◷",
+    hint: "queue and history",
+  },
 ];
 const pageFromHash = (): PageId => {
   const id = location.hash.replace(/^#\/?/, "") as PageId;
@@ -231,7 +281,9 @@ function TextViewer({
     setLoadError("");
     let live = true;
     fetch(url, { headers: { "X-Requested-With": "ydfs-web" } })
-      .then((r) => (r.ok ? r.text() : Promise.reject(new Error("Not available"))))
+      .then((r) =>
+        r.ok ? r.text() : Promise.reject(new Error("Not available")),
+      )
       .then((t) => live && setText(t))
       .catch((e) => live && setLoadError((e as Error).message));
     return () => {
@@ -244,7 +296,11 @@ function TextViewer({
     if (query.length < 2) return out;
     const hay = text.toLowerCase();
     const needle = query.toLowerCase();
-    for (let i = hay.indexOf(needle); i !== -1; i = hay.indexOf(needle, i + needle.length))
+    for (
+      let i = hay.indexOf(needle);
+      i !== -1;
+      i = hay.indexOf(needle, i + needle.length)
+    )
       out.push(i);
     return out;
   }, [text, query]);
@@ -520,7 +576,9 @@ function VmConsole({
           <h2>Test machine</h2>
           <small>
             {vm.iso || "ISO"} · {vm.state === "starting" ? "booting" : phase}
-            {vm.viewers === 0 && vm.state === "running" ? " · nobody watching" : ""}
+            {vm.viewers === 0 && vm.state === "running"
+              ? " · nobody watching"
+              : ""}
           </small>
         </div>
         <div className="detail-actions">
@@ -669,6 +727,59 @@ function App() {
       setRepoBusy("");
     }
   }
+  // Only the picked box changes: the other two keep the commits they show.
+  async function pickBranch(source: string, ref: string) {
+    setRepoError("");
+    try {
+      const got = await api<{ selected: string; commits: Commit[] }>(
+        `/repository/commits?ref=${encodeURIComponent(ref)}`,
+      );
+      setRepo(
+        (r) =>
+          r && {
+            ...r,
+            sources: r.sources.map((s) =>
+              s.name === source
+                ? { ...s, selected: got.selected, commits: got.commits }
+                : s,
+            ),
+          },
+      );
+    } catch (e) {
+      setRepoError((e as Error).message);
+    }
+  }
+  // A branch keeps the checkout named, which the command-line Makefile needs; a
+  // bare commit can only leave it detached, so that one is confirmed as risky.
+  function checkoutRef(ref: string, commit: boolean) {
+    setAsk({
+      title: commit ? "Check out this commit?" : `Switch to ${ref}?`,
+      body: commit
+        ? "The checkout moves onto that commit with a detached HEAD. Builds started here keep working, but make at the repository root does not: it derives the source directory from the branch name. Queued and running builds keep the snapshot they were submitted with."
+        : "The working tree moves onto that branch, and every build submitted afterwards is built from it. Queued and running builds keep the snapshot they were submitted with.",
+      confirm: commit ? "Check out" : "Switch",
+      danger: commit,
+      onConfirm: () => runCheckout(ref),
+    });
+  }
+  async function runCheckout(ref: string) {
+    setRepoBusy("checkout");
+    setRepoError("");
+    try {
+      const r = await api<Repository>("/repository/checkout", "POST", { ref });
+      setRepo(r);
+      setNotice(
+        r.detached
+          ? `Checkout detached at ${r.local.revision.slice(0, 12)}.`
+          : `Checkout switched to ${r.branch}.`,
+      );
+      await refresh();
+    } catch (e) {
+      setRepoError((e as Error).message);
+    } finally {
+      setRepoBusy("");
+    }
+  }
   const [settings, setSettings] = useState<Settings>(blankSettings);
   const [flathubBusy, setFlathubBusy] = useState(false);
   const [flathubError, setFlathubError] = useState("");
@@ -687,9 +798,7 @@ function App() {
   function toggleApp(id: string, on: boolean) {
     setSettings((s) => ({
       ...s,
-      flatpaks: on
-        ? [...s.flatpaks, id]
-        : s.flatpaks.filter((x) => x !== id),
+      flatpaks: on ? [...s.flatpaks, id] : s.flatpaks.filter((x) => x !== id),
     }));
   }
   async function refreshFlathub() {
@@ -769,7 +878,9 @@ function App() {
       onConfirm: () =>
         action(async () => {
           await api(`/jobs/${entry.id}/log`, "DELETE");
-          setViewing((old) => (old?.key === `log:${entry.id}` ? undefined : old));
+          setViewing((old) =>
+            old?.key === `log:${entry.id}` ? undefined : old,
+          );
         }),
     });
   }
@@ -972,6 +1083,92 @@ function App() {
   // Each screen of the workspace. They are built here rather than inline in the
   // markup so that a box can appear on more than one screen — the build details
   // and the job list belong both to "New build" and to "Build activity".
+  // One box per repository the checkout can be moved to: its own branches, the
+  // fork it was cloned from, and the fixed upstream project. A branch whose tree
+  // has no 2.12/ directory is still listed and readable, never switched to.
+  const repoSources = (
+    <div className="repo-sources">
+      {(repo?.sources ?? []).map((s) => {
+        const picked = s.branches.find((b) => b.ref === s.selected);
+        const frozen = !!repoBusy || !repo || repo.dirty;
+        return (
+          <section className="repo-source" key={s.name}>
+            <div className="repo-source-head">
+              <p className="eyebrow">{s.name}</p>
+              {s.url ? (
+                <a
+                  href={webURL(s.url)}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={s.url}
+                >
+                  {s.label} ↗
+                </a>
+              ) : (
+                <strong>{s.label}</strong>
+              )}
+            </div>
+            <div className="repo-source-actions">
+              <select
+                value={s.selected}
+                aria-label={`Branch shown for ${s.label}`}
+                onChange={(e) => pickBranch(s.name, e.target.value)}
+              >
+                {s.branches.map((b) => (
+                  <option key={b.ref} value={b.ref}>
+                    {b.name}
+                    {b.current ? " · current" : ""}
+                    {b.buildable ? "" : " · no 2.12/"}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="quiet"
+                disabled={
+                  frozen || !picked || picked.current || !picked.buildable
+                }
+                onClick={() => checkoutRef(s.selected, false)}
+              >
+                Checkout
+              </button>
+            </div>
+            {s.error && <p className="hint error">{s.error}</p>}
+            <ol className="commit-list">
+              {s.commits.map((c) => (
+                <li key={c.revision}>
+                  <div>
+                    <strong title={c.subject}>{c.subject}</strong>
+                    <small>
+                      <code>{c.revision.slice(0, 12)}</code> · {c.author} ·{" "}
+                      {date(c.date)}
+                    </small>
+                  </div>
+                  <button
+                    type="button"
+                    className="quiet"
+                    aria-label={`Check out ${c.revision.slice(0, 12)}`}
+                    disabled={frozen || c.revision === repo?.local.revision}
+                    onClick={() => checkoutRef(c.revision, true)}
+                  >
+                    Checkout
+                  </button>
+                </li>
+              ))}
+              {s.commits.length === 0 && (
+                <li className="pending">
+                  {s.name === "upstream"
+                    ? "Check upstream to list its commits."
+                    : "No commits to list."}
+                </li>
+              )}
+            </ol>
+          </section>
+        );
+      })}
+    </div>
+  );
+
   const repositoryBox = (
     <section className="panel repository">
       <div className="panel-heading">
@@ -979,7 +1176,9 @@ function App() {
           <h2>Repository</h2>
           {repo && (
             <span className="architecture">
-              {repo.branch}
+              {repo.detached
+                ? `detached · ${repo.local.revision.slice(0, 7)}`
+                : repo.branch}
               {repo.tag && ` · ${repo.tag}`}
             </span>
           )}
@@ -1040,6 +1239,15 @@ function App() {
           View on GitHub ↗
         </a>
       </p>
+      {repo?.detached && (
+        <p className="repo-status error">
+          Detached HEAD. Builds started here still work — they always build the
+          2.12 tree — but make at the repository root does not, because it takes
+          the source directory from the branch name. Switch to a branch below to
+          restore it.
+        </p>
+      )}
+      {repoSources}
     </section>
   );
 
@@ -1271,7 +1479,11 @@ function App() {
                       : "")}
               </small>
             </div>
-            <button type="button" className="quiet" onClick={() => go("flatpak")}>
+            <button
+              type="button"
+              className="quiet"
+              onClick={() => go("flatpak")}
+            >
               Choose applications →
             </button>
           </div>
@@ -1287,7 +1499,11 @@ function App() {
             Build environment<strong>Docker</strong>
           </span>
         </div>
-        <button className="primary" disabled={busy || !caps?.ready} type="submit">
+        <button
+          className="primary"
+          disabled={busy || !caps?.ready}
+          type="submit"
+        >
           {busy ? "Working…" : "＋ Queue build"}
         </button>
       </form>
@@ -1317,7 +1533,10 @@ function App() {
       ) : (
         <div className="launch-list">
           {bootable.map((j) => (
-            <div className={`launch-row ${vm.jobId === j.id && vmLive ? "running" : ""}`} key={j.id}>
+            <div
+              className={`launch-row ${vm.jobId === j.id && vmLive ? "running" : ""}`}
+              key={j.id}
+            >
               <div className="launch-head">
                 <strong>{names[j.settings.target] || j.settings.target}</strong>
                 <small>
@@ -1837,8 +2056,12 @@ function App() {
           </div>
           <div className="identity">
             <span className="status-dot" />
-            {caps?.development ? "Local development" : caps?.user || "Connecting"}
-            {caps && !caps.development && <a href="/oauth2/sign_out">Sign out</a>}
+            {caps?.development
+              ? "Local development"
+              : caps?.user || "Connecting"}
+            {caps && !caps.development && (
+              <a href="/oauth2/sign_out">Sign out</a>
+            )}
           </div>
         </div>
       </header>

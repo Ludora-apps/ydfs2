@@ -6,6 +6,64 @@ async function fixture(
   let jobs: any[] = [];
   let profiles: any[] = [];
   let logs = true;
+  const commit = (revision: string, subject: string) => ({
+    revision,
+    subject,
+    author: "tester",
+    date: "2026-09-18T10:00:00Z",
+  });
+  const repository = {
+    url: "https://github.com/linuxconsole-org/ydfs2",
+    branch: "2.12",
+    detached: false,
+    tag: "2026",
+    dirty: false,
+    local: commit("a".repeat(40), "local head"),
+    ahead: 0,
+    behind: 0,
+    fastForward: true,
+    sources: [
+      {
+        name: "local",
+        label: "This checkout",
+        url: "",
+        selected: "2.12",
+        branches: [
+          { name: "2.12", ref: "2.12", current: true, buildable: true },
+        ],
+        commits: [commit("a".repeat(40), "local head")],
+      },
+      {
+        name: "origin",
+        label: "Ludora-apps/ydfs2",
+        url: "git@github.com:Ludora-apps/ydfs2.git",
+        selected: "origin/2.12",
+        branches: [
+          { name: "2.12", ref: "origin/2.12", current: false, buildable: true },
+          { name: "3.0", ref: "origin/3.0", current: false, buildable: false },
+        ],
+        commits: [
+          commit("b".repeat(40), "fork commit"),
+          commit("c".repeat(40), "older fork commit"),
+        ],
+      },
+      {
+        name: "upstream",
+        label: "linuxconsole-org/ydfs2",
+        url: "https://github.com/linuxconsole-org/ydfs2",
+        selected: "upstream/2.12",
+        branches: [
+          {
+            name: "2.12",
+            ref: "upstream/2.12",
+            current: false,
+            buildable: true,
+          },
+        ],
+        commits: [commit("d".repeat(40), "upstream commit")],
+      },
+    ],
+  };
   await page.route("**/api/**", async (route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
@@ -39,7 +97,8 @@ async function fixture(
         vm: false,
         vmMessage: "No /dev/kvm on this host",
       });
-    if (path === "/api/vm") return json({ state: "stopped", viewers: 0, idleFor: 0 });
+    if (path === "/api/vm")
+      return json({ state: "stopped", viewers: 0, idleFor: 0 });
     if (path === "/api/flathub")
       return json({
         source: "built-in",
@@ -156,14 +215,25 @@ async function fixture(
         },
         body: "ISO fixture",
       });
+    if (path.startsWith("/api/repository")) {
+      if (path === "/api/repository/commits") {
+        const ref = new URL(req.url()).searchParams.get("ref");
+        const known = repository.sources.find((s) => s.selected === ref);
+        return json({
+          selected: ref,
+          commits: known
+            ? known.commits
+            : [commit("e".repeat(40), "rewritten layout")],
+        });
+      }
+      return json(repository);
+    }
     return json({ error: "not found" }, 404);
   });
   await page.goto("/");
   // The menu decides what the content area shows; the repository screen is
   // first, and every build assertion below lives on "New build".
-  await expect(
-    page.getByRole("heading", { name: "Repository" }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Repository" })).toBeVisible();
   await open(page, "New build");
   await expect(page.getByText("Build host ready")).toBeVisible();
 }
@@ -184,7 +254,9 @@ test("profile to build, live log, completion and downloads", async ({
   await expect(page.getByText("Profile saved.")).toBeVisible();
   await open(page, "New build");
   await page.getByRole("button", { name: "Queue build" }).click();
-  await expect(page.locator("section.history").getByText("succeeded", { exact: true })).toBeVisible();
+  await expect(
+    page.locator("section.history").getByText("succeeded", { exact: true }),
+  ).toBeVisible();
   await expect(page.getByLabel("Build log")).toBeHidden();
   await page.getByRole("button", { name: "Open log", exact: true }).click();
   await expect(page.getByLabel("Build log")).toContainText("g++ -Wall");
@@ -198,7 +270,9 @@ test("profile to build, live log, completion and downloads", async ({
   expect((await download).suggestedFilename()).toBe("build.log");
   await page.getByRole("button", { name: "Close log", exact: true }).click();
   await expect(page.getByLabel("Build log")).toBeHidden();
-  await expect(page.getByRole("button", { name: "Open log", exact: true })).toHaveAttribute("aria-expanded", "false");
+  await expect(
+    page.getByRole("button", { name: "Open log", exact: true }),
+  ).toHaveAttribute("aria-expanded", "false");
   await expect(
     page.getByRole("link", { name: /linuxconsole.iso/ }),
   ).toBeVisible();
@@ -211,7 +285,9 @@ test("running build can be cancelled", async ({ page }) => {
     page.getByRole("button", { name: "Cancel build", exact: true }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Cancel build", exact: true }).click();
-  await expect(page.locator("section.history").getByText("cancelled", { exact: true })).toBeVisible();
+  await expect(
+    page.locator("section.history").getByText("cancelled", { exact: true }),
+  ).toBeVisible();
 });
 test("failed builds show exit status and logs", async ({ page }) => {
   await fixture(page, "failure");
@@ -249,7 +325,9 @@ test("Flathub applications are selected on their own screen", async ({
   await expect(summary).toBeHidden();
   await page.getByLabel("Build target").selectOption("fast-iso");
   await page.getByRole("button", { name: "Queue build" }).click();
-  await expect(page.locator("section.history").getByText("succeeded", { exact: true })).toBeVisible();
+  await expect(
+    page.locator("section.history").getByText("succeeded", { exact: true }),
+  ).toBeVisible();
   await expect(page.getByText("1 Flathub app(s)")).toBeVisible();
 });
 test("the menu switches screens and survives a reload", async ({ page }) => {
@@ -272,15 +350,22 @@ test("the menu switches screens and survives a reload", async ({ page }) => {
 test("a succeeded build can be kept and released", async ({ page }) => {
   await fixture(page);
   await page.getByRole("button", { name: "Queue build" }).click();
-  await expect(page.locator("section.history").getByText("succeeded", { exact: true })).toBeVisible();
+  await expect(
+    page.locator("section.history").getByText("succeeded", { exact: true }),
+  ).toBeVisible();
   const box = page.locator("section.favorites");
   await open(page, "Kept builds");
   await expect(box).toContainText("Nothing is pinned");
   // Pin it: the kept-builds screen then offers the ISO and archived config.
   await open(page, "New build");
-  await page.getByRole("button", { name: "Keep", exact: false }).first().click();
+  await page
+    .getByRole("button", { name: "Keep", exact: false })
+    .first()
+    .click();
   await open(page, "Kept builds");
-  await expect(box.getByRole("link", { name: /linuxconsole.iso/ })).toBeVisible();
+  await expect(
+    box.getByRole("link", { name: /linuxconsole.iso/ }),
+  ).toBeVisible();
   await expect(box.getByRole("button", { name: "config.ini" })).toBeVisible();
   await expect(box.getByRole("button", { name: "Delete" })).toBeVisible();
   // Releasing it empties the screen again.
@@ -298,7 +383,9 @@ test("destructive actions confirm in a modal, never a native dialog", async ({
   });
   await fixture(page);
   await page.getByRole("button", { name: "Queue build" }).click();
-  await expect(page.locator("section.history").getByText("succeeded", { exact: true })).toBeVisible();
+  await expect(
+    page.locator("section.history").getByText("succeeded", { exact: true }),
+  ).toBeVisible();
 
   const modal = page.getByRole("dialog");
   await expect(modal).toBeHidden();
@@ -309,7 +396,9 @@ test("destructive actions confirm in a modal, never a native dialog", async ({
   // Escape dismisses, and the build survives.
   await page.keyboard.press("Escape");
   await expect(modal).toBeHidden();
-  await expect(page.locator("section.history").getByText("succeeded", { exact: true })).toBeVisible();
+  await expect(
+    page.locator("section.history").getByText("succeeded", { exact: true }),
+  ).toBeVisible();
 
   // Cancel dismisses too, and holds focus for a destructive action.
   await page.getByRole("button", { name: "Delete build" }).click();
@@ -317,7 +406,9 @@ test("destructive actions confirm in a modal, never a native dialog", async ({
   await expect(page.getByRole("button", { name: "Cancel" })).toBeFocused();
   await page.getByRole("button", { name: "Cancel" }).click();
   await expect(modal).toBeHidden();
-  await expect(page.locator("section.history").getByText("succeeded", { exact: true })).toBeVisible();
+  await expect(
+    page.locator("section.history").getByText("succeeded", { exact: true }),
+  ).toBeVisible();
 
   // Confirming actually deletes.
   await page.getByRole("button", { name: "Delete build" }).click();
@@ -349,7 +440,9 @@ test("build logs are listed, searchable with highlight, and deletable", async ({
   await box.locator(".log-open").click();
   const viewer = page.getByRole("dialog");
   await expect(viewer).toBeVisible();
-  await expect(page.getByLabel("File contents")).toContainText("linking fixture");
+  await expect(page.getByLabel("File contents")).toContainText(
+    "linking fixture",
+  );
 
   // Under two characters it refuses to search rather than matching everything.
   await page.getByLabel("Search text").fill("g");
@@ -394,7 +487,9 @@ test("the as-built config.ini opens in a modal, not a browser tab", async ({
   const opener = details.getByRole("button", { name: /config.ini/ });
   // A button, not a link: nothing here should navigate away or open a tab.
   await expect(opener).toBeVisible();
-  await expect(details.getByRole("link", { name: /config.ini/ })).toHaveCount(0);
+  await expect(details.getByRole("link", { name: /config.ini/ })).toHaveCount(
+    0,
+  );
 
   await opener.click();
   const viewer = page.getByRole("dialog");
@@ -438,10 +533,73 @@ test("mobile layout has no horizontal overflow", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await fixture(page);
   await page.getByRole("button", { name: "Queue build" }).click();
-  await expect(page.locator("section.history").getByText("succeeded", { exact: true })).toBeVisible();
+  await expect(
+    page.locator("section.history").getByText("succeeded", { exact: true }),
+  ).toBeVisible();
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
   ).toBe(true);
+});
+
+// Every repository the checkout can be moved to gets a box of its own, and a
+// switch is confirmed through the shared dialog — never window.confirm.
+test("repository boxes list commits and confirm a checkout", async ({
+  page,
+}) => {
+  await fixture(page);
+  page.on("dialog", () => {
+    throw new Error("the app opened a native browser dialog");
+  });
+  let checkouts = 0;
+  await page.route("**/api/repository/checkout", (route) => {
+    checkouts++;
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        url: "https://github.com/linuxconsole-org/ydfs2",
+        branch: "2.12",
+        detached: true,
+        tag: "2026",
+        dirty: false,
+        local: {
+          revision: "b".repeat(40),
+          subject: "fork commit",
+          author: "tester",
+          date: "2026-09-18T10:00:00Z",
+        },
+        ahead: 0,
+        behind: 0,
+        fastForward: true,
+        sources: [],
+      }),
+    });
+  });
+  await open(page, "Repository");
+  const fork = page.locator(".repo-source", { hasText: "Ludora-apps/ydfs2" });
+  await expect(fork.locator(".commit-list li")).toHaveCount(2);
+  await expect(fork.getByText("fork commit", { exact: true })).toBeVisible();
+  await expect(
+    page.locator(".repo-source", { hasText: "linuxconsole-org/ydfs2" }),
+  ).toContainText("upstream commit");
+  // A branch whose tree has no 2.12/ is readable but not buildable.
+  await fork.getByRole("combobox").selectOption("origin/3.0");
+  await expect(fork.locator(".commit-list")).toContainText("rewritten layout");
+  await expect(fork.getByRole("button", { name: "Checkout" })).toBeDisabled();
+  // Switching branches asks first, and Cancel sends nothing.
+  await fork.getByRole("combobox").selectOption("origin/2.12");
+  await fork.getByRole("button", { name: "Checkout" }).click();
+  await expect(page.getByRole("dialog")).toContainText("Switch to origin/2.12");
+  await page.getByRole("button", { name: "Cancel" }).click();
+  expect(checkouts).toBe(0);
+  // A bare commit warns that the checkout ends up detached.
+  await fork
+    .getByRole("button", { name: `Check out ${"b".repeat(12)}` })
+    .click();
+  await expect(page.getByRole("dialog")).toContainText("detached HEAD");
+  await page.getByRole("button", { name: "Check out", exact: true }).click();
+  await expect(page.getByText("Checkout detached at")).toBeVisible();
+  expect(checkouts).toBe(1);
 });
