@@ -69,15 +69,23 @@ type Source struct {
 	Error    string   `json:"error,omitempty"`
 }
 type Repository struct {
-	URL         string   `json:"url"`
-	Branch      string   `json:"branch"`
-	Detached    bool     `json:"detached"`
-	Tag         string   `json:"tag"`
-	Dirty       bool     `json:"dirty"`
-	Local       Commit   `json:"local"`
-	Upstream    *Commit  `json:"upstream,omitempty"`
-	Ahead       int      `json:"ahead"`
-	Behind      int      `json:"behind"`
+	URL      string  `json:"url"`
+	Branch   string  `json:"branch"`
+	Detached bool    `json:"detached"`
+	Tag      string  `json:"tag"`
+	Dirty    bool    `json:"dirty"`
+	Local    Commit  `json:"local"`
+	Upstream *Commit `json:"upstream,omitempty"`
+	Ahead    int     `json:"ahead"`
+	Behind   int     `json:"behind"`
+	// Fork* is the same comparison against the fork's copy of this branch,
+	// which is what a push would publish. It is a different number from
+	// Ahead/Behind — a checkout fully pushed to its fork is still every one of
+	// those commits ahead of upstream — and confusing the two makes the Push
+	// button offer to publish work that is already there.
+	ForkTracked bool     `json:"forkTracked"` // origin carries a branch of this name
+	ForkAhead   int      `json:"forkAhead"`
+	ForkBehind  int      `json:"forkBehind"`
 	FastForward bool     `json:"fastForward"`
 	CheckedAt   string   `json:"checkedAt,omitempty"`
 	Sources     []Source `json:"sources"`
@@ -309,12 +317,22 @@ func (a *App) state(ctx context.Context) (*Repository, error) {
 			r.FastForward = e == nil
 		}
 	}
+	if !r.Detached {
+		if rev := "refs/remotes/" + originRemote + "/" + r.Branch; a.hasRef(ctx, rev) {
+			r.ForkTracked = true
+			r.ForkAhead, r.ForkBehind, _ = a.counts(ctx, rev)
+		}
+	}
 	r.Sources = a.sources(ctx, r, originErr)
 	r.GitHub = a.github(ctx)
 	a.graftMu.Lock()
 	r.Graft = a.graft
 	a.graftMu.Unlock()
 	return r, nil
+}
+func (a *App) hasRef(ctx context.Context, rev string) bool {
+	out, e := a.git(ctx, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
+	return e == nil && out != ""
 }
 func (a *App) counts(ctx context.Context, rev string) (int, int, error) {
 	out, e := a.git(ctx, "rev-list", "--left-right", "--count", "HEAD..."+rev)

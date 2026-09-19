@@ -359,3 +359,39 @@ func TestPullRequestRefusesAnUnlistedRevision(t *testing.T) {
 		t.Fatalf("unknown mode returned %d", w.Code)
 	}
 }
+
+// A checkout fully pushed to its fork is still every one of those commits
+// ahead of upstream. The two counts are not interchangeable, and the Push
+// button reads the fork one.
+func TestForkCountsAreSeparateFromUpstreamCounts(t *testing.T) {
+	a := testApp(t)
+	upstream := t.TempDir()
+	gitFixture(t, upstream, "init", "-b", defaultBranch)
+	putFile(t, filepath.Join(upstream, "2.12", "Makefile"), "all:\n")
+	gitFixture(t, upstream, "add", ".")
+	gitFixture(t, upstream, "commit", "-m", "first")
+	fork := t.TempDir()
+	gitFixture(t, t.TempDir(), "clone", "--bare", upstream, fork)
+	gitFixture(t, t.TempDir(), "clone", fork, a.repo)
+	a.upstreamFrom = upstream
+
+	s := repoOf(t, request(a, "POST", "/api/repository/check", "{}"))
+	if s.Ahead != 0 || !s.ForkTracked || s.ForkAhead != 0 {
+		t.Fatalf("a fresh clone is ahead of nothing: %+v", s)
+	}
+	putFile(t, filepath.Join(a.repo, "work.txt"), "work\n")
+	gitFixture(t, a.repo, "add", ".")
+	gitFixture(t, a.repo, "commit", "-m", "local work")
+	s = repoOf(t, request(a, "GET", "/api/repository", ""))
+	if s.Ahead != 1 || s.ForkAhead != 1 {
+		t.Fatalf("an unpushed commit is ahead of both: ahead=%d forkAhead=%d", s.Ahead, s.ForkAhead)
+	}
+	gitFixture(t, a.repo, "push", originRemote, defaultBranch)
+	s = repoOf(t, request(a, "GET", "/api/repository", ""))
+	if s.Ahead != 1 {
+		t.Fatalf("pushing to the fork does not reach upstream: ahead=%d", s.Ahead)
+	}
+	if s.ForkAhead != 0 || s.ForkBehind != 0 {
+		t.Fatalf("a pushed commit is still reported as unpushed: forkAhead=%d forkBehind=%d", s.ForkAhead, s.ForkBehind)
+	}
+}

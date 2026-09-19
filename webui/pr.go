@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -325,6 +326,15 @@ func (a *App) repositoryPush(w http.ResponseWriter, r *http.Request) {
 	if e != nil {
 		fail(w, 500, e.Error())
 		return
+	}
+	// A fork that has commits this checkout does not carry cannot take a
+	// fast-forward push, and this never forces the branch people share.
+	if rev := "refs/remotes/" + originRemote + "/" + branch; a.hasRef(ctx, rev) {
+		if _, behind, e := a.counts(ctx, rev); e == nil && behind > 0 {
+			fail(w, 409, originRemote+"/"+branch+" has "+strconv.Itoa(behind)+
+				" commit(s) this checkout does not; check upstream and merge them before pushing")
+			return
+		}
 	}
 	// Never forced: this is a branch people share, not one this manager owns.
 	if e := a.pushTo(ctx, a.repo, head, branch, false); e != nil {

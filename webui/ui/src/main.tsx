@@ -108,6 +108,12 @@ type Repository = {
   upstream?: Commit;
   ahead: number;
   behind: number;
+  // The same comparison against the fork's copy of this branch — what a push
+  // would actually publish. A checkout fully pushed to its fork is still every
+  // one of its commits ahead of upstream, so these are not interchangeable.
+  forkTracked: boolean;
+  forkAhead: number;
+  forkBehind: number;
   fastForward: boolean;
   checkedAt?: string;
   sources: Source[];
@@ -865,7 +871,9 @@ function App() {
     if (!repo) return;
     setAsk({
       title: `Push ${repo.branch} to ${repo.github?.origin || "origin"}?`,
-      body: `Your ${repo.ahead} local commit(s) are published on the fork. The push is fast-forward only, so nothing already there can be lost.`,
+      body: repo.forkTracked
+        ? `The ${repo.forkAhead} commit(s) this checkout has beyond ${repo.github?.origin}/${repo.branch} are published there. The push is fast-forward only, so nothing already on the fork can be lost.`
+        : `${repo.branch} does not exist on ${repo.github?.origin} yet; this creates it.`,
       confirm: "Push",
       onConfirm: () => {
         repoAction("push", () =>
@@ -1571,17 +1579,28 @@ function App() {
             <button
               type="button"
               className="quiet"
-              title={`Publish ${repo.branch} on ${repo.github.origin}`}
+              title={
+                repo.forkBehind > 0
+                  ? `${repo.github.origin} has ${repo.forkBehind} commit(s) this checkout does not`
+                  : `Publish ${repo.branch} on ${repo.github.origin}`
+              }
               disabled={
                 !!repoBusy ||
                 repo.dirty ||
                 repo.detached ||
-                repo.ahead === 0 ||
+                repo.forkBehind > 0 ||
+                (repo.forkTracked && repo.forkAhead === 0) ||
                 !!repo.graft
               }
               onClick={pushOrigin}
             >
-              {repoBusy === "push" ? "Pushing…" : `↑ Push (${repo.ahead})`}
+              {repoBusy === "push"
+                ? "Pushing…"
+                : !repo.forkTracked
+                  ? `↑ Publish ${repo.branch}`
+                  : repo.forkAhead > 0
+                    ? `↑ Push (${repo.forkAhead})`
+                    : "Fork up to date"}
             </button>
           )}
           <button
