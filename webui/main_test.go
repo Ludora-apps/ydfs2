@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -238,6 +239,66 @@ func TestFlathubCatalogue(t *testing.T) {
 	b := &App{db: a.db, data: a.data}
 	if got := b.catalogue(); got.Source != "flathub" || len(got.Apps) != 1 {
 		t.Fatalf("cached catalogue not reloaded: %+v", got)
+	}
+}
+
+// The catalogue is the whole of Flathub, which arrives a page at a time. A
+// failure partway must keep the pages already read rather than throwing the
+// refresh away, and a repeated entry must not be offered twice.
+func TestFlathubPagination(t *testing.T) {
+	a := testApp(t)
+	pages := 0
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pages++
+		if r.URL.Query().Get("per_page") != strconv.Itoa(flathubPageSize) {
+			t.Errorf("page %d asked for %q per page", pages, r.URL.Query().Get("per_page"))
+		}
+		switch r.URL.Query().Get("page") {
+		case "1":
+			// A full page: the fetch must ask for another one.
+			hits := make([]string, 0, flathubPageSize)
+			for i := 0; i < flathubPageSize; i++ {
+				hits = append(hits, fmt.Sprintf(`{"app_id":"org.example.App%d","name":"App %d","summary":"s"}`, i, i))
+			}
+			fmt.Fprintf(w, `{"totalPages":3,"hits":[%s]}`, strings.Join(hits, ","))
+		case "2":
+			// A short page ends it, and the repeat of App0 is dropped.
+			fmt.Fprint(w, `{"totalPages":3,"hits":[{"app_id":"org.example.App0","name":"App 0"},{"app_id":"org.example.Last","name":"Last"}]}`)
+		default:
+			t.Errorf("unexpected page %q", r.URL.Query().Get("page"))
+			http.Error(w, "boom", 500)
+		}
+	}))
+	defer live.Close()
+	a.flathubFrom = live.URL
+	c := a.refreshCatalogue(context.Background())
+	if c.Error != "" || pages != 2 {
+		t.Fatalf("read %d page(s): %+v", pages, c.Error)
+	}
+	if len(c.Apps) != flathubPageSize+1 || c.Apps[len(c.Apps)-1].ID != "org.example.Last" {
+		t.Fatalf("paged catalogue is %d application(s), last %+v", len(c.Apps), c.Apps[len(c.Apps)-1])
+	}
+	if !a.allowedFlatpak("org.example.Last") {
+		t.Fatal("a paged-in application is not allowed to be built")
+	}
+	// A failure on a later page keeps what was already read; only a failure on
+	// the very first page leaves the previous catalogue in place.
+	half := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") != "1" {
+			http.Error(w, "boom", 500)
+			return
+		}
+		hits := make([]string, 0, flathubPageSize)
+		for i := 0; i < flathubPageSize; i++ {
+			hits = append(hits, fmt.Sprintf(`{"app_id":"org.example.Half%d","name":"Half %d"}`, i, i))
+		}
+		fmt.Fprintf(w, `{"totalPages":9,"hits":[%s]}`, strings.Join(hits, ","))
+	}))
+	defer half.Close()
+	a.flathubFrom = half.URL
+	c = a.refreshCatalogue(context.Background())
+	if c.Error != "" || len(c.Apps) != flathubPageSize || c.Source != "flathub" {
+		t.Fatalf("a partial read must still be a catalogue: %d application(s), %q", len(c.Apps), c.Error)
 	}
 }
 func TestFlathubSubmission(t *testing.T) {

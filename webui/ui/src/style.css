@@ -195,6 +195,7 @@ h3 {
 .panel-heading-title {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   min-width: 0;
 }
@@ -246,6 +247,10 @@ h3 {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* A title with a long chip beside it and a button on the right runs out of
+     room on a phone: let the row break instead of overlapping. */
+  flex-wrap: wrap;
+  gap: 10px;
   margin-bottom: 22px;
 }
 .step {
@@ -1255,4 +1260,231 @@ footer {
   font-size: 13px;
   line-height: 1.5;
   color: var(--muted);
+}
+
+/* Left-hand menu. Each entry is one screen of the workspace (see `menu` in
+   main.tsx); the column is sticky so the menu stays put while a long log or a
+   catalogue of three thousand applications scrolls beside it. */
+.shell {
+  display: grid;
+  grid-template-columns: 248px minmax(0, 1fr);
+  align-items: start;
+}
+/* Both columns are grid items, whose default min-width:auto would let a wide
+   child (a table of applications, a long log line) stretch the whole page
+   instead of scrolling inside itself. */
+.shell > main,
+.shell > .sidenav {
+  min-width: 0;
+}
+.sidenav {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 36px 6px 36px 24px;
+  min-width: 0;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.nav-item:hover {
+  background: var(--hover);
+}
+.nav-item.active {
+  background: var(--selected);
+  border-color: var(--selected-border);
+  color: var(--accent-text);
+}
+.nav-icon {
+  flex: none;
+  width: 20px;
+  text-align: center;
+  color: var(--muted);
+}
+.nav-item.active .nav-icon {
+  color: var(--accent-text);
+}
+.nav-text {
+  flex: 1;
+  min-width: 0;
+}
+.nav-text small {
+  display: block;
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--muted);
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+.nav-badge {
+  flex: none;
+  background: var(--neutral);
+  color: var(--neutral-text);
+  border-radius: 20px;
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 700;
+}
+.nav-badge.warn {
+  background: var(--soft-accent);
+  color: var(--accent-text);
+}
+.nav-badge.live {
+  background: var(--success);
+  color: var(--success-text);
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+@media (max-width: 900px) {
+  .shell {
+    grid-template-columns: 1fr;
+  }
+  /* A row of chips above the content, scrolled sideways inside itself so the
+     page itself never gains a horizontal scrollbar. */
+  .sidenav {
+    position: static;
+    flex-direction: row;
+    gap: 8px;
+    padding: 14px 5% 0;
+    overflow-x: auto;
+  }
+  .nav-item {
+    width: auto;
+    flex: 0 0 auto;
+    padding: 8px 12px;
+  }
+  .nav-text small {
+    display: none;
+  }
+}
+
+/* The build form's line about Flathub: the catalogue itself is a screen of its
+   own, so the form only reports the selection and links to it. */
+.flatpak-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  border: 1px solid var(--border);
+  background: var(--input);
+  border-radius: 7px;
+  padding: 12px 14px;
+  margin-bottom: 17px;
+}
+.flatpak-summary strong {
+  display: block;
+  font-size: 12px;
+}
+.flatpak-summary small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+
+/* Flatpak screen: the whole Flathub catalogue, searched in the browser. */
+.apps-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.apps-toolbar input {
+  margin: 0;
+  flex: 1 1 220px;
+  min-width: 0;
+  padding: 9px 11px;
+}
+.apps-toolbar .matches {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.apps.wide {
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  max-height: 46vh;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-bottom: 12px;
+}
+.chip {
+  max-width: 100%;
+  text-align: left;
+  border: 1px solid var(--selected-border);
+  background: var(--selected);
+  color: var(--accent-text);
+  border-radius: 20px;
+  padding: 5px 11px;
+  font-size: 11px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.chip:hover {
+  background: var(--hover);
+}
+.hint.error {
+  color: var(--danger-text);
+}
+
+/* Launch screen: the ISOs that can be booted here, one row each. */
+.launch-list {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.launch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  border: 1px solid var(--subtle-border);
+  background: var(--input);
+  border-radius: 9px;
+  padding: 12px 14px;
+  min-width: 0;
+}
+.launch-row.running {
+  border-color: var(--selected-border);
+  background: var(--selected);
+}
+.launch-head {
+  min-width: 0;
+}
+.launch-head strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+}
+.launch-head small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.launch-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }

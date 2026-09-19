@@ -40,6 +40,10 @@ func (a *App) freeBytes() (uint64, error) {
 	e := syscall.Statfs(a.data, &s)
 	return s.Bavail * uint64(s.Bsize), e
 }
+
+// capabilities is polled every few seconds by every open browser, so it stays
+// small: the Flathub catalogue is thousands of applications and has its own
+// endpoint (GET /api/flathub), fetched once when the page loads.
 func (a *App) capabilities(w http.ResponseWriter, r *http.Request) {
 	ctx, c := context.WithTimeout(r.Context(), 5*time.Second)
 	defer c()
@@ -68,7 +72,7 @@ func (a *App) capabilities(w http.ResponseWriter, r *http.Request) {
 		vmMessage = "Docker is unavailable, so a build cannot be booted here"
 	}
 	packageLists, _ := a.packageListNames()
-	respond(w, map[string]any{"vm": vmMessage == "", "vmMessage": vmMessage, "targets": targets, "packageLists": packageLists, "flathub": a.catalogue(), "architecture": "x86_64", "distribution": "linuxconsole", "user": user, "docker": dockerOK && ce == nil, "freeBytes": free, "minFreeBytes": a.minFree, "ready": msg == "", "message": msg, "defaults": Settings{Target: "fast-iso", Verbose: true, Flatpaks: []string{}}, "development": a.dev})
+	respond(w, map[string]any{"vm": vmMessage == "", "vmMessage": vmMessage, "targets": targets, "packageLists": packageLists, "architecture": "x86_64", "distribution": "linuxconsole", "user": user, "docker": dockerOK && ce == nil, "freeBytes": free, "minFreeBytes": a.minFree, "ready": msg == "", "message": msg, "defaults": Settings{Target: "fast-iso", Verbose: true, Flatpaks: []string{}}, "development": a.dev})
 }
 func gitOutput(repo string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)

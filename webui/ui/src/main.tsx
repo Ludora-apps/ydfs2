@@ -60,7 +60,6 @@ type Repository = {
 type Capabilities = {
   targets: string[];
   packageLists: string[];
-  flathub?: FlathubCatalogue;
   architecture: string;
   distribution: string;
   user: string;
@@ -149,6 +148,39 @@ type LogEntry = {
   size: number;
   present: boolean;
 };
+
+// The left-hand menu. Each entry owns one screen of the workspace: exactly one
+// is shown in the content area at a time, and the location hash carries it, so
+// a reload, the back button and a pasted #/logs link all land in the same place.
+type PageId =
+  | "repo"
+  | "favorites"
+  | "build"
+  | "launch"
+  | "flatpak"
+  | "logs"
+  | "profiles"
+  | "activity";
+const menu: { id: PageId; label: string; icon: string; hint: string }[] = [
+  { id: "repo", label: "Repository", icon: "◆", hint: "checkout and upstream" },
+  { id: "favorites", label: "Kept builds", icon: "★", hint: "never cleaned up" },
+  { id: "build", label: "New build", icon: "＋", hint: "configure and queue" },
+  { id: "launch", label: "Launch", icon: "▶", hint: "boot an ISO in the browser" },
+  { id: "flatpak", label: "Flatpak", icon: "▦", hint: "applications in the ISO" },
+  { id: "logs", label: "Logs", icon: "▤", hint: "every build log" },
+  { id: "profiles", label: "Saved profiles", icon: "☰", hint: "reusable settings" },
+  { id: "activity", label: "Build activity", icon: "◷", hint: "queue and history" },
+];
+const pageFromHash = (): PageId => {
+  const id = location.hash.replace(/^#\/?/, "") as PageId;
+  return menu.some((m) => m.id === id) ? id : "repo";
+};
+
+// Mirrors maxFlatpakApps in model.go: the server refuses a longer selection.
+const maxApps = 40;
+// Flathub is thousands of applications; rendering them all as checkboxes costs
+// far more than it shows. Past this the list asks for a narrower search.
+const maxAppRows = 300;
 
 // Highlighting every match of a common substring in a multi-megabyte log would
 // create more nodes than it is worth; past this the search still counts matches
@@ -537,6 +569,18 @@ function VmConsole({
   );
 }
 function App() {
+  const [page, setPage] = useState<PageId>(pageFromHash);
+  useEffect(() => {
+    const onHash = () => setPage(pageFromHash());
+    addEventListener("hashchange", onHash);
+    return () => removeEventListener("hashchange", onHash);
+  }, []);
+  // Navigating writes the hash and sets the state; the listener above keeps
+  // them together when the move comes from the browser instead.
+  const go = (id: PageId) => {
+    location.hash = `#/${id}`;
+    setPage(id);
+  };
   const [ask, setAsk] = useState<Confirmation | undefined>();
   const [logList, setLogList] = useState<LogEntry[]>([]);
   const [viewing, setViewing] = useState<TextView | undefined>();
@@ -628,6 +672,18 @@ function App() {
   const [settings, setSettings] = useState<Settings>(blankSettings);
   const [flathubBusy, setFlathubBusy] = useState(false);
   const [flathubError, setFlathubError] = useState("");
+  // The whole Flathub catalogue: fetched once, not with every capabilities
+  // poll, because it is thousands of applications.
+  const [flathub, setFlathub] = useState<FlathubCatalogue>({
+    apps: [],
+    source: "",
+  });
+  const [appSearch, setAppSearch] = useState("");
+  useEffect(() => {
+    api<FlathubCatalogue>("/flathub")
+      .then(setFlathub)
+      .catch((e) => setFlathubError((e as Error).message));
+  }, []);
   function toggleApp(id: string, on: boolean) {
     setSettings((s) => ({
       ...s,
@@ -641,10 +697,10 @@ function App() {
     setFlathubError("");
     try {
       const c = await api<FlathubCatalogue>("/flathub/refresh", "POST");
+      setFlathub(c);
       setFlathubError(c.error || "");
-      // The catalogue reaches the form through /api/capabilities.
-      await refresh();
-      if (!c.error) setNotice("Flathub list refreshed.");
+      if (!c.error)
+        setNotice(`Flathub list refreshed: ${c.apps.length} applications.`);
     } catch (e) {
       setFlathubError((e as Error).message);
     } finally {
@@ -735,6 +791,9 @@ function App() {
   function startVm(j: Job) {
     action(async () => {
       setVm(await api<VMStatus>(`/jobs/${j.id}/vm`, "POST", {}));
+      // The screen only exists on the Launch page; booting from anywhere else
+      // would otherwise start a machine nobody can see.
+      go("launch");
     });
   }
   function stopVm(jobId: string) {
@@ -880,6 +939,870 @@ function App() {
       (line) => !search || line.toLowerCase().includes(search.toLowerCase()),
     )
     .join("\n");
+  const presentLogs = logList.filter((l) => l.present);
+  // Only a finished ISO whose files are still on disk can be booted.
+  const bootable = jobs.filter(
+    (j) => isIso(j.settings.target) && j.state === "succeeded" && !j.prunedAt,
+  );
+  const appName = (id: string) =>
+    flathub.apps.find((a) => a.id === id)?.name || id;
+  const shownApps = useMemo(() => {
+    const q = appSearch.trim().toLowerCase();
+    if (!q) return flathub.apps;
+    return flathub.apps.filter(
+      (a) =>
+        a.name.toLowerCase().includes(q) ||
+        a.id.toLowerCase().includes(q) ||
+        (a.summary || "").toLowerCase().includes(q),
+    );
+  }, [flathub, appSearch]);
+  const badge = (n: number, extra = "") =>
+    n > 0 ? <span className={`nav-badge ${extra}`}>{n}</span> : null;
+  const badges: Record<PageId, React.ReactNode> = {
+    repo: repo && repo.behind > 0 ? badge(repo.behind, "warn") : null,
+    favorites: badge(favorites.length),
+    build: null,
+    launch: vmLive ? <span className="nav-badge live">live</span> : null,
+    flatpak: badge(settings.flatpaks.length),
+    logs: badge(presentLogs.length),
+    profiles: badge(profiles.length),
+    activity: badge(jobs.length),
+  };
+
+  // Each screen of the workspace. They are built here rather than inline in the
+  // markup so that a box can appear on more than one screen — the build details
+  // and the job list belong both to "New build" and to "Build activity".
+  const repositoryBox = (
+    <section className="panel repository">
+      <div className="panel-heading">
+        <div className="panel-heading-title">
+          <h2>Repository</h2>
+          {repo && (
+            <span className="architecture">
+              {repo.branch}
+              {repo.tag && ` · ${repo.tag}`}
+            </span>
+          )}
+        </div>
+        <div className="repo-actions">
+          <button
+            type="button"
+            className="quiet"
+            disabled={!!repoBusy}
+            onClick={() => loadRepo(true)}
+          >
+            {repoBusy === "check" ? "Checking…" : "↻ Check upstream"}
+          </button>
+          <button
+            type="button"
+            className="update"
+            disabled={
+              !!repoBusy || !repo?.upstream || repo.behind === 0 || repo.dirty
+            }
+            onClick={updateRepo}
+          >
+            {repoBusy === "update"
+              ? "Updating…"
+              : repo && repo.behind > 0
+                ? `↓ Update (${repo.behind})`
+                : "Up to date"}
+          </button>
+        </div>
+      </div>
+      <div className="commits">
+        {commitCard(
+          "THIS CHECKOUT",
+          repo?.local,
+          repo?.dirty ? " · uncommitted changes" : undefined,
+        )}
+        {commitCard(
+          "UPSTREAM · LINUXCONSOLE-ORG/YDFS2",
+          repo?.upstream,
+          repo?.checkedAt ? ` · checked ${date(repo.checkedAt)}` : undefined,
+        )}
+      </div>
+      <p className={`repo-status ${repoError ? "error" : ""}`}>
+        {repoError ||
+          (!repo
+            ? "Reading the checkout…"
+            : !repo.upstream
+              ? "Check upstream to compare this checkout with GitHub."
+              : repo.dirty
+                ? "The checkout has uncommitted changes; commit or discard them before updating."
+                : repo.behind === 0
+                  ? `Up to date with ${repo.branch} on GitHub.${repo.ahead > 0 ? ` ${repo.ahead} local commit(s) ahead.` : ""}`
+                  : `${repo.behind} new commit(s) available on ${repo.branch}.${repo.ahead > 0 ? ` Updating merges them into your ${repo.ahead} local commit(s).` : ""} Only builds queued afterwards are affected.`)}{" "}
+        <a
+          href={repo?.url || "https://github.com/linuxconsole-org/ydfs2"}
+          target="_blank"
+          rel="noreferrer"
+        >
+          View on GitHub ↗
+        </a>
+      </p>
+    </section>
+  );
+
+  const favoritesBox = (
+    <section className="panel favorites">
+      <div className="panel-heading">
+        <div className="panel-heading-title">
+          <h2>Kept builds</h2>
+          <span className="architecture">never cleaned up</span>
+        </div>
+        <span className="count">{favorites.length}</span>
+      </div>
+      {favorites.length === 0 ? (
+        <p className="hint">
+          Nothing is pinned. Only the {keepBuilds} most recent successful builds
+          of each kind keep their files; use “Keep” on a build to hold on to its
+          ISO for good.
+        </p>
+      ) : (
+        <div className="fav-list">
+          {favorites.map((f) => (
+            <div className="fav" key={f.id}>
+              <div className="fav-head">
+                <button
+                  className="fav-title"
+                  onClick={() => {
+                    setSelected(f.id);
+                    go("activity");
+                  }}
+                >
+                  {names[f.settings.target] || f.settings.target}
+                </button>
+                <small>
+                  {date(f.created)} · {f.revision.slice(0, 12)} ·{" "}
+                  {f.tag || "untagged"}
+                </small>
+              </div>
+              <div className="fav-actions">
+                {f.artifacts.map((v) => (
+                  <a
+                    key={v.name}
+                    href={`/api/jobs/${f.id}/artifacts/${encodeURIComponent(v.name)}`}
+                  >
+                    ↓ {v.name} <small>{bytes(v.size)}</small>
+                  </a>
+                ))}
+                <button
+                  type="button"
+                  className="quiet"
+                  onClick={() => viewConfig(f)}
+                >
+                  config.ini
+                </button>
+                {vmButton(f)}
+                <button
+                  className="quiet"
+                  disabled={busy}
+                  onClick={() => toggleFavorite(f)}
+                >
+                  Release
+                </button>
+                <button
+                  className="quiet"
+                  disabled={busy}
+                  onClick={() => removeBuild(f)}
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+
+  const newBuildBox = (
+    <section className="panel">
+      <div className="panel-heading">
+        <div className="panel-heading-title">
+          <h2>New build</h2>
+          <span className="architecture">Linux · x86_64</span>
+        </div>
+        <span className="step">01</span>
+      </div>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          action(async () => {
+            const j = await api<Job>("/jobs", "POST", {
+              ...settings,
+              // Only an ISO can carry applications; a selection left over from
+              // another target would be refused by the server.
+              flatpaks: isIso(settings.target) ? settings.flatpaks : [],
+            });
+            setSelected(j.id);
+            setNotice("Build added to the queue.");
+          });
+        }}
+      >
+        <label>
+          Build target
+          <select
+            value={settings.target}
+            onChange={(e) =>
+              setSettings({
+                ...settings,
+                target: e.target.value,
+                kernel: "",
+              })
+            }
+          >
+            {(caps?.targets || Object.keys(names)).map((t) => (
+              <option key={t} value={t}>
+                {names[t] || t}
+              </option>
+            ))}
+          </select>
+        </label>
+        <p className="hint">
+          {settings.target === "fast-iso"
+            ? "Uses prebuilt core and kernel files, then builds updates and the ISO."
+            : settings.target === "full-iso"
+              ? "Compiles from source using cached work where available. A full build can take hours or days."
+              : "Builds this component using the existing LinuxConsole scripts and cache."}
+        </p>
+        {(settings.target === "full-iso" || settings.target === "kernel") && (
+          <label>
+            Kernel version <span className="optional">optional</span>
+            <input
+              placeholder="Use repository default"
+              value={settings.kernel}
+              pattern="[0-9]+\.[0-9]+\.[0-9]+"
+              onChange={(e) =>
+                setSettings({ ...settings, kernel: e.target.value })
+              }
+            />
+            <span className="hint">
+              An explicit version uses the repository’s kernel configuration.
+            </span>
+          </label>
+        )}
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={settings.verbose}
+            onChange={(e) =>
+              setSettings({ ...settings, verbose: e.target.checked })
+            }
+          />
+          <span>
+            Verbose compilation
+            <small>Show compiler output in the live log.</small>
+          </span>
+        </label>
+        <label>
+          Config.ini overrides <span className="optional">optional</span>
+          <textarea
+            className="code"
+            rows={4}
+            placeholder={"KERNEL3=6.18.29\nBUILDMODULES=YES"}
+            value={settings.configOverrides}
+            onChange={(e) =>
+              setSettings({
+                ...settings,
+                configOverrides: e.target.value,
+              })
+            }
+          />
+          <span className="hint">
+            One <code>NAME=value</code> line per setting, appended after the
+            repository’s generated config.ini. Values may only contain letters,
+            digits, and <code>{" _./:+-"}</code>, optionally wrapped in double
+            quotes for a space-separated list. Build-critical keys (
+            <code>ARCH</code>, <code>DISTRONAME</code>, <code>BUILDYDFS</code>,{" "}
+            <code>ISOTMP</code>, <code>SEND_BUILD_LOG</code>,{" "}
+            <code>SEND_OPKG</code>, <code>MENUCONFIG</code>) are managed by the
+            build manager and cannot be overridden.
+          </span>
+        </label>
+        <label>
+          Package list <span className="optional">optional</span>
+          <select
+            disabled={loadingList}
+            value={settings.packageList}
+            onChange={(e) => loadPackageList(e.target.value)}
+          >
+            <option value="">Use the repository’s list</option>
+            {(caps?.packageLists || []).map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+          {settings.packageList && (
+            <textarea
+              className="code"
+              rows={8}
+              value={settings.packageListText}
+              onChange={(e) =>
+                setSettings({
+                  ...settings,
+                  packageListText: e.target.value,
+                })
+              }
+            />
+          )}
+          <span className="hint">
+            Replaces <code>packages/list-{settings.packageList || "…"}</code>{" "}
+            for this build only; the shared repository checkout is never
+            modified.
+          </span>
+        </label>
+        {/* The applications themselves are chosen on the Flatpak screen: the
+            catalogue is the whole of Flathub and does not belong in a form. */}
+        {isIso(settings.target) && (
+          <div className="flatpak-summary">
+            <div>
+              <strong>
+                {settings.flatpaks.length} Flathub application
+                {settings.flatpaks.length === 1 ? "" : "s"}
+              </strong>
+              <small>
+                {settings.flatpaks.length === 0
+                  ? "None are pre-installed in this ISO."
+                  : settings.flatpaks.slice(0, 4).map(appName).join(", ") +
+                    (settings.flatpaks.length > 4
+                      ? ` and ${settings.flatpaks.length - 4} more`
+                      : "")}
+              </small>
+            </div>
+            <button type="button" className="quiet" onClick={() => go("flatpak")}>
+              Choose applications →
+            </button>
+          </div>
+        )}
+        <div className="config-summary">
+          <span>
+            Distribution<strong>linuxconsole</strong>
+          </span>
+          <span>
+            Architecture<strong>x86_64</strong>
+          </span>
+          <span>
+            Build environment<strong>Docker</strong>
+          </span>
+        </div>
+        <button className="primary" disabled={busy || !caps?.ready} type="submit">
+          {busy ? "Working…" : "＋ Queue build"}
+        </button>
+      </form>
+    </section>
+  );
+
+  const launchBox = (
+    <section className="panel launch">
+      <div className="panel-heading">
+        <div className="panel-heading-title">
+          <h2>Launch an ISO</h2>
+          <span className="architecture">QEMU · one at a time</span>
+        </div>
+        <span className="count">{bootable.length}</span>
+      </div>
+      {!caps?.vm && (
+        <p className="hint error">
+          {caps?.vmMessage || "Test machines are unavailable on this server."}
+        </p>
+      )}
+      {bootable.length === 0 ? (
+        <p className="hint">
+          A finished ISO whose files are still on disk can be booted here, in
+          the browser, without writing it to a USB stick. Queue a Fast ISO or
+          Full ISO build first.
+        </p>
+      ) : (
+        <div className="launch-list">
+          {bootable.map((j) => (
+            <div className={`launch-row ${vm.jobId === j.id && vmLive ? "running" : ""}`} key={j.id}>
+              <div className="launch-head">
+                <strong>{names[j.settings.target] || j.settings.target}</strong>
+                <small>
+                  {date(j.created)} · {j.revision.slice(0, 12)} ·{" "}
+                  {j.tag || "untagged"}
+                  {j.artifacts[0] ? ` · ${bytes(j.artifacts[0].size)}` : ""}
+                </small>
+              </div>
+              <div className="launch-actions">
+                {j.favorite && (
+                  <span className="pin" title="Kept build">
+                    ★
+                  </span>
+                )}
+                {vmButton(j)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <p className="hint">
+        The machine gets 4 GiB of RAM and no disk: nothing inside it is saved.
+        It is discarded when you stop it, after 30 minutes with nobody watching,
+        or when the build manager shuts down.
+      </p>
+    </section>
+  );
+
+  const flatpakBox = (
+    <section className="panel flathub-box">
+      <div className="panel-heading">
+        <div className="panel-heading-title">
+          <h2>Flathub applications</h2>
+          <span className="architecture">
+            {flathub.apps.length} available
+            {flathub.checkedAt
+              ? ` · updated ${date(flathub.checkedAt)}`
+              : " · built-in list"}
+          </span>
+        </div>
+        <button
+          type="button"
+          className="quiet"
+          disabled={flathubBusy}
+          onClick={refreshFlathub}
+        >
+          {flathubBusy ? "Refreshing…" : "↻ Refresh from Flathub"}
+        </button>
+      </div>
+      <p className="hint">
+        Ticked applications are downloaded during the build and baked into the
+        ISO, so they work with no network on first boot. Each one adds hundreds
+        of megabytes to several gigabytes once its runtime is counted, and at
+        most {maxApps} can be selected. The selection applies to the next Fast
+        ISO or Full ISO build you queue.
+      </p>
+      <div className="apps-toolbar">
+        <label className="sr-only" htmlFor="app-search">
+          Search applications
+        </label>
+        <input
+          id="app-search"
+          placeholder="Search applications…"
+          value={appSearch}
+          onChange={(e) => setAppSearch(e.target.value)}
+        />
+        <span className="matches">
+          {settings.flatpaks.length} / {maxApps} selected
+        </span>
+        <button
+          type="button"
+          className="quiet"
+          disabled={settings.flatpaks.length === 0}
+          onClick={() => setSettings((s) => ({ ...s, flatpaks: [] }))}
+        >
+          Clear selection
+        </button>
+      </div>
+      {settings.flatpaks.length > 0 && (
+        <div className="chips">
+          {settings.flatpaks.map((id) => (
+            <button
+              type="button"
+              className="chip"
+              key={id}
+              title={id}
+              aria-label={`Remove ${appName(id)}`}
+              onClick={() => toggleApp(id, false)}
+            >
+              {appName(id)} <span aria-hidden="true">×</span>
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="apps wide" role="group" aria-label="Flathub applications">
+        {shownApps.length === 0 && (
+          <p className="hint">
+            {flathub.apps.length === 0
+              ? "The catalogue is still loading."
+              : `Nothing matches “${appSearch}”.`}
+          </p>
+        )}
+        {shownApps.slice(0, maxAppRows).map((app) => {
+          const on = settings.flatpaks.includes(app.id);
+          return (
+            <label className="check" key={app.id}>
+              <input
+                type="checkbox"
+                checked={on}
+                disabled={!on && settings.flatpaks.length >= maxApps}
+                onChange={(e) => toggleApp(app.id, e.target.checked)}
+              />
+              <span>
+                {app.name}
+                <small>{app.summary || app.id}</small>
+              </span>
+            </label>
+          );
+        })}
+      </div>
+      <p className={`hint ${flathubError ? "error" : ""}`}>
+        {flathubError ||
+          (shownApps.length > maxAppRows
+            ? `Showing the first ${maxAppRows} of ${shownApps.length} matches — narrow the search to see the rest.`
+            : `Showing ${shownApps.length} of ${flathub.apps.length} applications, most popular first.`)}
+      </p>
+    </section>
+  );
+
+  const logsBox = (
+    <section className="panel logs-box">
+      <div className="panel-heading">
+        <div className="panel-heading-title">
+          <h2>Build logs</h2>
+          <span className="architecture">logs-build/</span>
+        </div>
+        <span className="count">{presentLogs.length}</span>
+      </div>
+      {presentLogs.length === 0 ? (
+        <p className="hint">
+          Every build writes its log here. They are kept when a build's
+          artifacts are reclaimed, and removed when the build is deleted.
+        </p>
+      ) : (
+        <div className="log-rows">
+          {presentLogs.map((l) => (
+            <div className="log-row" key={l.id}>
+              <button className="log-open" onClick={() => viewLog(l)}>
+                <strong>{names[l.target] || l.target}</strong>
+                <small>
+                  {l.user} · {date(l.created)} · {bytes(l.size)}
+                </small>
+              </button>
+              <span className={`badge ${l.state}`}>{l.state}</span>
+              <a
+                href={`/api/jobs/${l.id}/log`}
+                aria-label={`Download log for ${names[l.target] || l.target}`}
+              >
+                ↓
+              </a>
+              <button
+                className="quiet"
+                disabled={busy || !done(l.state)}
+                aria-label={`Delete log for ${names[l.target] || l.target}`}
+                onClick={() => removeLog(l)}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+
+  const profilesBox = (
+    <section className="panel profiles-box">
+      <div className="panel-heading">
+        <div className="panel-heading-title">
+          <h2>Saved profiles</h2>
+          <span className="architecture">reusable settings</span>
+        </div>
+        <span className="count">{profiles.length}</span>
+      </div>
+      <div className="profiles">
+        {profiles.length === 0 && (
+          <p className="hint">Save settings you use regularly.</p>
+        )}
+        {profiles.map((p) => (
+          <div key={p.name}>
+            <button
+              onClick={() => {
+                setSettings({
+                  ...blankSettings,
+                  ...p.settings,
+                  flatpaks: p.settings.flatpaks ?? [],
+                });
+                setProfileName(p.name);
+                setNotice(`Loaded profile “${p.name}”.`);
+              }}
+            >
+              {p.name}
+              <small>{names[p.settings.target]}</small>
+            </button>
+            <button
+              aria-label={`Delete profile ${p.name}`}
+              onClick={() =>
+                action(async () => {
+                  await api(
+                    `/profiles/${encodeURIComponent(p.name)}`,
+                    "DELETE",
+                  );
+                })
+              }
+            >
+              ×
+            </button>
+          </div>
+        ))}
+      </div>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          action(async () => {
+            await api("/profiles", "PUT", {
+              name: profileName,
+              settings,
+            });
+            setNotice("Profile saved.");
+          });
+        }}
+      >
+        <label className="sr-only" htmlFor="profile">
+          Profile name
+        </label>
+        <input
+          id="profile"
+          placeholder="Profile name"
+          maxLength={80}
+          required
+          value={profileName}
+          onChange={(e) => setProfileName(e.target.value)}
+        />
+        <button className="secondary" disabled={busy || !profileName.trim()}>
+          Save current settings
+        </button>
+      </form>
+      <p className="hint">
+        A profile stores what the New build screen currently holds, including
+        the Flathub selection.
+      </p>
+    </section>
+  );
+
+  const metricsBox = (
+    <div className="metrics">
+      <div>
+        <span className={`status-dot ${caps?.ready ? "" : "warning"}`} />
+        <strong>
+          {caps?.ready ? "Build host ready" : "Build host needs attention"}
+        </strong>
+        <small>{caps?.message || "Docker environment"}</small>
+      </div>
+      <div>
+        <strong>{caps ? bytes(caps.freeBytes) : "—"}</strong>
+        <small>Available storage</small>
+      </div>
+      <div>
+        <strong>
+          {active ? "1" : "0"} running <span>/ {queued} queued</span>
+        </strong>
+        <small>One build at a time · shared cache</small>
+      </div>
+    </div>
+  );
+
+  const activityBox = (
+    <section className="panel history">
+      <div className="panel-heading">
+        <h2>Build activity</h2>
+        <span className="count">{jobs.length}</span>
+      </div>
+      {jobs.length === 0 ? (
+        <div className="empty">
+          <span>⌘</span>
+          <h3>Your first build starts here</h3>
+          <p>
+            Choose a target and queue a build.
+            <br />
+            Progress and results will appear here.
+          </p>
+        </div>
+      ) : (
+        <div className="job-list">
+          {jobs.map((j) => (
+            <button
+              className={`job-row ${selected === j.id ? "selected" : ""}`}
+              key={j.id}
+              onClick={() => setSelected(j.id)}
+            >
+              <span className={`job-icon ${j.state}`}>
+                {j.state === "succeeded"
+                  ? "✓"
+                  : j.state === "failed"
+                    ? "!"
+                    : done(j.state)
+                      ? "–"
+                      : "›"}
+              </span>
+              <span className="job-name">
+                <strong>{names[j.settings.target]}</strong>
+                <small>
+                  {j.user} · {date(j.created)}
+                </small>
+              </span>
+              {j.favorite && (
+                <span className="pin" title="Kept build">
+                  ★
+                </span>
+              )}
+              <span className={`badge ${j.state}`}>{j.state}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+
+  const detailsBox = job && (
+    <section className="panel details">
+      <div className="panel-heading">
+        <div>
+          <p className="eyebrow">BUILD DETAILS</p>
+          <h2>{names[job.settings.target]}</h2>
+        </div>
+        {!done(job.state) ? (
+          <button
+            className="danger"
+            disabled={busy || job.state === "cancelling"}
+            onClick={() =>
+              action(async () => {
+                await api(`/jobs/${job.id}/cancel`, "POST", {});
+              })
+            }
+          >
+            {job.state === "cancelling" ? "Cancelling…" : "Cancel build"}
+          </button>
+        ) : (
+          <div className="detail-actions">
+            {vmButton(job)}
+            {job.state === "succeeded" && !job.prunedAt && (
+              <button
+                className="quiet"
+                disabled={busy}
+                aria-pressed={job.favorite}
+                onClick={() => toggleFavorite(job)}
+              >
+                {job.favorite ? "★ Kept" : "☆ Keep"}
+              </button>
+            )}
+            <button
+              className="quiet"
+              disabled={busy}
+              onClick={() => removeBuild(job)}
+            >
+              Delete build
+            </button>
+          </div>
+        )}
+      </div>
+      <dl>
+        <div>
+          <dt>Revision</dt>
+          <dd>
+            {job.revision.slice(0, 12)} · {job.tag || "untagged"}
+          </dd>
+        </div>
+        <div>
+          <dt>Configuration</dt>
+          <dd>
+            {job.settings.kernel || "Default kernel"} ·{" "}
+            {job.settings.verbose ? "Verbose" : "Summary"} logs
+            {job.settings.configOverrides && " · config overrides"}
+            {job.settings.packageList &&
+              ` · package list: ${job.settings.packageList}`}
+            {(job.settings.flatpaks?.length ?? 0) > 0 &&
+              ` · ${job.settings.flatpaks.length} Flathub app(s)`}
+          </dd>
+        </div>
+        <div>
+          <dt>Started</dt>
+          <dd>{date(job.started)}</dd>
+        </div>
+        <div>
+          <dt>Finished</dt>
+          <dd>
+            {date(job.finished)}
+            {job.exitCode !== undefined && ` · exit ${job.exitCode}`}
+          </dd>
+        </div>
+      </dl>
+      {job.error && <p className="build-error">{job.error}</p>}
+      {job.artifacts.length > 0 && (
+        <div className="artifacts">
+          {job.artifacts.map((f) => (
+            <a
+              key={f.name}
+              href={`/api/jobs/${job.id}/artifacts/${encodeURIComponent(f.name)}`}
+            >
+              <span>↓ {f.name}</span>
+              <small>{bytes(f.size)}</small>
+            </a>
+          ))}
+        </div>
+      )}
+      {job.prunedAt && (
+        <p className="hint reclaimed">
+          Files removed {date(job.prunedAt)} to make room: only the
+          {` ${keepBuilds} `}most recent builds of each kind keep theirs. The
+          log and configuration below are still here. Use “Keep” on a build to
+          pin its files permanently.
+        </p>
+      )}
+      {job.state === "succeeded" && (
+        <div className="artifacts">
+          <button
+            type="button"
+            className="artifact-open"
+            onClick={() => viewConfig(job)}
+          >
+            <span>⚙ config.ini</span>
+            <small>as built</small>
+          </button>
+        </div>
+      )}
+      <button
+        type="button"
+        className="quiet"
+        aria-expanded={logOpen}
+        aria-controls="build-log-panel"
+        onClick={() => setLogOpen((open) => !open)}
+      >
+        {logOpen ? "Close log" : "Open log"}
+      </button>
+      <div id="build-log-panel" hidden={!logOpen}>
+        <div className="log-toolbar">
+          <span>
+            <span className={`status-dot ${done(job.state) ? "idle" : ""}`} />
+            {streamState}
+          </span>
+          <label className="sr-only" htmlFor="log-search">
+            Filter log
+          </label>
+          <input
+            id="log-search"
+            placeholder="Filter visible log…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <label className="follow">
+            <input
+              type="checkbox"
+              checked={follow}
+              onChange={(e) => setFollow(e.target.checked)}
+            />
+            Follow
+          </label>
+          <a href={`/api/jobs/${job.id}/log`}>Download log ↓</a>
+        </div>
+        <div
+          className="terminal"
+          ref={terminal}
+          tabIndex={0}
+          aria-label="Build log"
+        >
+          <pre>{visibleLog || "Waiting for build output…"}</pre>
+        </div>
+        <p className="log-footnote">
+          Showing the latest 300 lines. Download the log for the complete
+          output.
+        </p>
+      </div>
+    </section>
+  );
+
   return (
     <div className="app">
       <header>
@@ -914,730 +1837,94 @@ function App() {
           </div>
           <div className="identity">
             <span className="status-dot" />
-            {caps?.development
-              ? "Local development"
-              : caps?.user || "Connecting"}
-            {caps && !caps.development && (
-              <a href="/oauth2/sign_out">Sign out</a>
-            )}
+            {caps?.development ? "Local development" : caps?.user || "Connecting"}
+            {caps && !caps.development && <a href="/oauth2/sign_out">Sign out</a>}
           </div>
         </div>
       </header>
-      <main>
-        <section className="panel repository">
-          <div className="panel-heading">
-            <div className="panel-heading-title">
-              <h2>Repository</h2>
-              {repo && (
-                <span className="architecture">
-                  {repo.branch}
-                  {repo.tag && ` · ${repo.tag}`}
-                </span>
-              )}
-            </div>
-            <div className="repo-actions">
-              <button
-                type="button"
-                className="quiet"
-                disabled={!!repoBusy}
-                onClick={() => loadRepo(true)}
-              >
-                {repoBusy === "check" ? "Checking…" : "↻ Check upstream"}
-              </button>
-              <button
-                type="button"
-                className="update"
-                disabled={
-                  !!repoBusy ||
-                  !repo?.upstream ||
-                  repo.behind === 0 ||
-                  repo.dirty
-                }
-                onClick={updateRepo}
-              >
-                {repoBusy === "update"
-                  ? "Updating…"
-                  : repo && repo.behind > 0
-                    ? `↓ Update (${repo.behind})`
-                    : "Up to date"}
-              </button>
-            </div>
-          </div>
-          <div className="commits">
-            {commitCard(
-              "THIS CHECKOUT",
-              repo?.local,
-              repo?.dirty ? " · uncommitted changes" : undefined,
-            )}
-            {commitCard(
-              "UPSTREAM · LINUXCONSOLE-ORG/YDFS2",
-              repo?.upstream,
-              repo?.checkedAt ? ` · checked ${date(repo.checkedAt)}` : undefined,
-            )}
-          </div>
-          <p className={`repo-status ${repoError ? "error" : ""}`}>
-            {repoError ||
-              (!repo
-                ? "Reading the checkout…"
-                : !repo.upstream
-                  ? "Check upstream to compare this checkout with GitHub."
-                  : repo.dirty
-                    ? "The checkout has uncommitted changes; commit or discard them before updating."
-                    : repo.behind === 0
-                      ? `Up to date with ${repo.branch} on GitHub.${repo.ahead > 0 ? ` ${repo.ahead} local commit(s) ahead.` : ""}`
-                      : `${repo.behind} new commit(s) available on ${repo.branch}.${repo.ahead > 0 ? ` Updating merges them into your ${repo.ahead} local commit(s).` : ""} Only builds queued afterwards are affected.`)}{" "}
-            <a href={repo?.url || "https://github.com/linuxconsole-org/ydfs2"} target="_blank" rel="noreferrer">
-              View on GitHub ↗
-            </a>
-          </p>
-        </section>
-        {error && (
-          <div className="alert" role="alert">
-            {error}
-            <button onClick={() => setError("")} aria-label="Dismiss error">
-              ×
+      <div className="shell">
+        <nav className="sidenav" aria-label="Workspace sections">
+          {menu.map((m) => (
+            <button
+              type="button"
+              key={m.id}
+              className={`nav-item ${page === m.id ? "active" : ""}`}
+              aria-current={page === m.id ? "page" : undefined}
+              onClick={() => go(m.id)}
+            >
+              <span className="nav-icon" aria-hidden="true">
+                {m.icon}
+              </span>
+              <span className="nav-text">
+                {m.label}
+                <small>{m.hint}</small>
+              </span>
+              {badges[m.id]}
             </button>
-          </div>
-        )}
-        {notice && (
-          <div className="notice" role="status">
-            {notice}
-          </div>
-        )}
-        <div className="workspace">
-          <aside>
-            <section className="panel">
-              <div className="panel-heading">
-                <div className="panel-heading-title">
-                  <h2>New build</h2>
-                  <span className="architecture">Linux · x86_64</span>
-                </div>
-                <span className="step">01</span>
-              </div>
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  action(async () => {
-                    const j = await api<Job>("/jobs", "POST", settings);
-                    setSelected(j.id);
-                    setNotice("Build added to the queue.");
-                  });
-                }}
-              >
-                <label>
-                  Build target
-                  <select
-                    value={settings.target}
-                    onChange={(e) =>
-                      setSettings({
-                        ...settings,
-                        target: e.target.value,
-                        kernel: "",
-                      })
-                    }
-                  >
-                    {(caps?.targets || Object.keys(names)).map((t) => (
-                      <option key={t} value={t}>
-                        {names[t] || t}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <p className="hint">
-                  {settings.target === "fast-iso"
-                    ? "Uses prebuilt core and kernel files, then builds updates and the ISO."
-                    : settings.target === "full-iso"
-                      ? "Compiles from source using cached work where available. A full build can take hours or days."
-                      : "Builds this component using the existing LinuxConsole scripts and cache."}
-                </p>
-                {(settings.target === "full-iso" ||
-                  settings.target === "kernel") && (
-                  <label>
-                    Kernel version <span className="optional">optional</span>
-                    <input
-                      placeholder="Use repository default"
-                      value={settings.kernel}
-                      pattern="[0-9]+\.[0-9]+\.[0-9]+"
-                      onChange={(e) =>
-                        setSettings({ ...settings, kernel: e.target.value })
-                      }
-                    />
-                    <span className="hint">
-                      An explicit version uses the repository’s kernel
-                      configuration.
-                    </span>
-                  </label>
-                )}
-                <label className="check">
-                  <input
-                    type="checkbox"
-                    checked={settings.verbose}
-                    onChange={(e) =>
-                      setSettings({ ...settings, verbose: e.target.checked })
-                    }
-                  />
-                  <span>
-                    Verbose compilation
-                    <small>Show compiler output in the live log.</small>
-                  </span>
-                </label>
-                <label>
-                  Config.ini overrides{" "}
-                  <span className="optional">optional</span>
-                  <textarea
-                    className="code"
-                    rows={4}
-                    placeholder={"KERNEL3=6.18.29\nBUILDMODULES=YES"}
-                    value={settings.configOverrides}
-                    onChange={(e) =>
-                      setSettings({
-                        ...settings,
-                        configOverrides: e.target.value,
-                      })
-                    }
-                  />
-                  <span className="hint">
-                    One <code>NAME=value</code> line per setting, appended
-                    after the repository’s generated config.ini. Values may
-                    only contain letters, digits, and{" "}
-                    <code>{" _./:+-"}</code>, optionally wrapped in double
-                    quotes for a space-separated list. Build-critical keys
-                    (<code>ARCH</code>, <code>DISTRONAME</code>,{" "}
-                    <code>BUILDYDFS</code>, <code>ISOTMP</code>,{" "}
-                    <code>SEND_BUILD_LOG</code>, <code>SEND_OPKG</code>,{" "}
-                    <code>MENUCONFIG</code>) are managed by the build manager
-                    and cannot be overridden.
-                  </span>
-                </label>
-                <label>
-                  Package list <span className="optional">optional</span>
-                  <select
-                    disabled={loadingList}
-                    value={settings.packageList}
-                    onChange={(e) => loadPackageList(e.target.value)}
-                  >
-                    <option value="">Use the repository’s list</option>
-                    {(caps?.packageLists || []).map((n) => (
-                      <option key={n} value={n}>
-                        {n}
-                      </option>
-                    ))}
-                  </select>
-                  {settings.packageList && (
-                    <textarea
-                      className="code"
-                      rows={8}
-                      value={settings.packageListText}
-                      onChange={(e) =>
-                        setSettings({
-                          ...settings,
-                          packageListText: e.target.value,
-                        })
-                      }
-                    />
-                  )}
-                  <span className="hint">
-                    Replaces <code>packages/list-{settings.packageList || "…"}</code>{" "}
-                    for this build only; the shared repository checkout is
-                    never modified.
-                  </span>
-                </label>
-                {isIso(settings.target) && (
-                  <fieldset className="apps-field">
-                    <legend>
-                      Flathub applications{" "}
-                      <span className="optional">optional</span>
-                    </legend>
-                    <div className="apps">
-                      {(caps?.flathub?.apps || []).map((app) => (
-                        <label className="check" key={app.id}>
-                          <input
-                            type="checkbox"
-                            checked={settings.flatpaks.includes(app.id)}
-                            onChange={(e) =>
-                              toggleApp(app.id, e.target.checked)
-                            }
-                          />
-                          <span>
-                            {app.name}
-                            <small>{app.summary || app.id}</small>
-                          </span>
-                        </label>
-                      ))}
-                    </div>
-                    <div className="apps-actions">
-                      <button
-                        type="button"
-                        className="secondary"
-                        disabled={flathubBusy}
-                        onClick={refreshFlathub}
-                      >
-                        {flathubBusy ? "Refreshing…" : "Refresh from Flathub"}
-                      </button>
-                      <small>
-                        {settings.flatpaks.length} selected
-                        {caps?.flathub?.checkedAt
-                          ? ` · updated ${date(caps.flathub.checkedAt)}`
-                          : " · built-in list"}
-                      </small>
-                    </div>
-                    <span className={`hint ${flathubError ? "error" : ""}`}>
-                      {flathubError ||
-                        "Downloaded during the build and baked into the ISO, so they work with no network on first boot. Each application adds hundreds of megabytes to several gigabytes once its runtime is counted."}
-                    </span>
-                  </fieldset>
-                )}
-                <div className="config-summary">
-                  <span>
-                    Distribution<strong>linuxconsole</strong>
-                  </span>
-                  <span>
-                    Architecture<strong>x86_64</strong>
-                  </span>
-                  <span>
-                    Build environment<strong>Docker</strong>
-                  </span>
-                </div>
-                <button
-                  className="primary"
-                  disabled={busy || !caps?.ready}
-                  type="submit"
-                >
-                  {busy ? "Working…" : "＋ Queue build"}
-                </button>
-              </form>
-            </section>
-            <section className="panel">
-              <h2>Saved profiles</h2>
-              <div className="profiles">
-                {profiles.length === 0 && (
-                  <p className="hint">Save settings you use regularly.</p>
-                )}
-                {profiles.map((p) => (
-                  <div key={p.name}>
-                    <button
-                      onClick={() => {
-                        setSettings({
-                          ...blankSettings,
-                          ...p.settings,
-                          flatpaks: p.settings.flatpaks ?? [],
-                        });
-                        setProfileName(p.name);
-                        setNotice(`Loaded profile “${p.name}”.`);
-                      }}
-                    >
-                      {p.name}
-                      <small>{names[p.settings.target]}</small>
-                    </button>
-                    <button
-                      aria-label={`Delete profile ${p.name}`}
-                      onClick={() =>
-                        action(async () => {
-                          await api(
-                            `/profiles/${encodeURIComponent(p.name)}`,
-                            "DELETE",
-                          );
-                        })
-                      }
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-              </div>
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  action(async () => {
-                    await api("/profiles", "PUT", {
-                      name: profileName,
-                      settings,
-                    });
-                    setNotice("Profile saved.");
-                  });
-                }}
-              >
-                <label className="sr-only" htmlFor="profile">
-                  Profile name
-                </label>
-                <input
-                  id="profile"
-                  placeholder="Profile name"
-                  maxLength={80}
-                  required
-                  value={profileName}
-                  onChange={(e) => setProfileName(e.target.value)}
-                />
-                <button
-                  className="secondary"
-                  disabled={busy || !profileName.trim()}
-                >
-                  Save current settings
-                </button>
-              </form>
-            </section>
-          </aside>
-          <div className="builds">
-            <div className="metrics">
-              <div>
-                <span className={`status-dot ${caps?.ready ? "" : "warning"}`} />
-                <strong>
-                  {caps?.ready ? "Build host ready" : "Build host needs attention"}
-                </strong>
-                <small>{caps?.message || "Docker environment"}</small>
-              </div>
-              <div>
-                <strong>{caps ? bytes(caps.freeBytes) : "—"}</strong>
-                <small>Available storage</small>
-              </div>
-              <div>
-                <strong>
-                  {active ? "1" : "0"} running <span>/ {queued} queued</span>
-                </strong>
-                <small>One build at a time · shared cache</small>
-              </div>
-            </div>
-            {favorites.length > 0 && (
-              <section className="panel favorites">
-                <div className="panel-heading">
-                  <div className="panel-heading-title">
-                    <h2>Kept builds</h2>
-                    <span className="architecture">never cleaned up</span>
-                  </div>
-                  <span className="count">{favorites.length}</span>
-                </div>
-                <div className="fav-list">
-                  {favorites.map((f) => (
-                    <div className="fav" key={f.id}>
-                      <div className="fav-head">
-                        <button
-                          className="fav-title"
-                          onClick={() => setSelected(f.id)}
-                        >
-                          {names[f.settings.target] || f.settings.target}
-                        </button>
-                        <small>
-                          {date(f.created)} · {f.revision.slice(0, 12)} ·{" "}
-                          {f.tag || "untagged"}
-                        </small>
-                      </div>
-                      <div className="fav-actions">
-                        {f.artifacts.map((v) => (
-                          <a
-                            key={v.name}
-                            href={`/api/jobs/${f.id}/artifacts/${encodeURIComponent(v.name)}`}
-                          >
-                            ↓ {v.name} <small>{bytes(v.size)}</small>
-                          </a>
-                        ))}
-                        <button
-                          type="button"
-                          className="quiet"
-                          onClick={() => viewConfig(f)}
-                        >
-                          config.ini
-                        </button>
-                        {vmButton(f)}
-                        <button
-                          className="quiet"
-                          disabled={busy}
-                          onClick={() => toggleFavorite(f)}
-                        >
-                          Release
-                        </button>
-                        <button
-                          className="quiet"
-                          disabled={busy}
-                          onClick={() => removeBuild(f)}
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
-            <section className="panel history">
-              <div className="panel-heading">
-                <h2>Build activity</h2>
-                <span className="count">{jobs.length}</span>
-              </div>
-              {jobs.length === 0 ? (
-                <div className="empty">
-                  <span>⌘</span>
-                  <h3>Your first build starts here</h3>
-                  <p>
-                    Choose a target and queue a build.
-                    <br />
-                    Progress and results will appear here.
-                  </p>
-                </div>
-              ) : (
-                <div className="job-list">
-                  {jobs.map((j) => (
-                    <button
-                      className={`job-row ${selected === j.id ? "selected" : ""}`}
-                      key={j.id}
-                      onClick={() => setSelected(j.id)}
-                    >
-                      <span className={`job-icon ${j.state}`}>
-                        {j.state === "succeeded"
-                          ? "✓"
-                          : j.state === "failed"
-                            ? "!"
-                            : done(j.state)
-                              ? "–"
-                              : "›"}
-                      </span>
-                      <span className="job-name">
-                        <strong>{names[j.settings.target]}</strong>
-                        <small>
-                          {j.user} · {date(j.created)}
-                        </small>
-                      </span>
-                      {j.favorite && (
-                        <span className="pin" title="Kept build">
-                          ★
-                        </span>
-                      )}
-                      <span className={`badge ${j.state}`}>{j.state}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </section>
-            {job && (
-              <section className="panel details">
-                <div className="panel-heading">
-                  <div>
-                    <p className="eyebrow">BUILD DETAILS</p>
-                    <h2>{names[job.settings.target]}</h2>
-                  </div>
-                  {!done(job.state) ? (
-                    <button
-                      className="danger"
-                      disabled={busy || job.state === "cancelling"}
-                      onClick={() =>
-                        action(async () => {
-                          await api(`/jobs/${job.id}/cancel`, "POST", {});
-                        })
-                      }
-                    >
-                      {job.state === "cancelling"
-                        ? "Cancelling…"
-                        : "Cancel build"}
-                    </button>
-                  ) : (
-                    <div className="detail-actions">
-                      {vmButton(job)}
-                      {job.state === "succeeded" && !job.prunedAt && (
-                        <button
-                          className="quiet"
-                          disabled={busy}
-                          aria-pressed={job.favorite}
-                          onClick={() => toggleFavorite(job)}
-                        >
-                          {job.favorite ? "★ Kept" : "☆ Keep"}
-                        </button>
-                      )}
-                      <button
-                        className="quiet"
-                        disabled={busy}
-                        onClick={() => removeBuild(job)}
-                      >
-                        Delete build
-                      </button>
-                    </div>
-                  )}
-                </div>
-                <dl>
-                  <div>
-                    <dt>Revision</dt>
-                    <dd>
-                      {job.revision.slice(0, 12)} · {job.tag || "untagged"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Configuration</dt>
-                    <dd>
-                      {job.settings.kernel || "Default kernel"} ·{" "}
-                      {job.settings.verbose ? "Verbose" : "Summary"} logs
-                      {job.settings.configOverrides && " · config overrides"}
-                      {job.settings.packageList &&
-                        ` · package list: ${job.settings.packageList}`}
-                      {(job.settings.flatpaks?.length ?? 0) > 0 &&
-                        ` · ${job.settings.flatpaks.length} Flathub app(s)`}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Started</dt>
-                    <dd>{date(job.started)}</dd>
-                  </div>
-                  <div>
-                    <dt>Finished</dt>
-                    <dd>
-                      {date(job.finished)}
-                      {job.exitCode !== undefined && ` · exit ${job.exitCode}`}
-                    </dd>
-                  </div>
-                </dl>
-                {job.error && <p className="build-error">{job.error}</p>}
-                {job.artifacts.length > 0 && (
-                  <div className="artifacts">
-                    {job.artifacts.map((f) => (
-                      <a
-                        key={f.name}
-                        href={`/api/jobs/${job.id}/artifacts/${encodeURIComponent(f.name)}`}
-                      >
-                        <span>↓ {f.name}</span>
-                        <small>{bytes(f.size)}</small>
-                      </a>
-                    ))}
-                  </div>
-                )}
-                {job.prunedAt && (
-                  <p className="hint reclaimed">
-                    Files removed {date(job.prunedAt)} to make room: only the
-                    {` ${keepBuilds} `}most recent builds of each kind keep
-                    theirs. The log and configuration below are still here. Use
-                    “Keep” on a build to pin its files permanently.
-                  </p>
-                )}
-                {job.state === "succeeded" && (
-                  <div className="artifacts">
-                    <button
-                      type="button"
-                      className="artifact-open"
-                      onClick={() => viewConfig(job)}
-                    >
-                      <span>⚙ config.ini</span>
-                      <small>as built</small>
-                    </button>
-                  </div>
-                )}
-                <button
-                  type="button"
-                  className="quiet"
-                  aria-expanded={logOpen}
-                  aria-controls="build-log-panel"
-                  onClick={() => setLogOpen((open) => !open)}
-                >
-                  {logOpen ? "Close log" : "Open log"}
-                </button>
-                <div id="build-log-panel" hidden={!logOpen}>
-                  <div className="log-toolbar">
-                    <span>
-                      <span
-                        className={`status-dot ${done(job.state) ? "idle" : ""}`}
-                      />
-                      {streamState}
-                    </span>
-                    <label className="sr-only" htmlFor="log-search">
-                      Filter log
-                    </label>
-                    <input
-                      id="log-search"
-                      placeholder="Filter visible log…"
-                      value={search}
-                      onChange={(e) => setSearch(e.target.value)}
-                    />
-                    <label className="follow">
-                      <input
-                        type="checkbox"
-                        checked={follow}
-                        onChange={(e) => setFollow(e.target.checked)}
-                      />
-                      Follow
-                    </label>
-                    <a href={`/api/jobs/${job.id}/log`}>Download log ↓</a>
-                  </div>
-                  <div
-                    className="terminal"
-                    ref={terminal}
-                    tabIndex={0}
-                    aria-label="Build log"
-                  >
-                    <pre>{visibleLog || "Waiting for build output…"}</pre>
-                  </div>
-                  <p className="log-footnote">
-                    Showing the latest 300 lines. Download the log for
-                    the complete output.
-                  </p>
-                </div>
-              </section>
-            )}
-          </div>
-        </div>
-        <section className="panel logs-box">
-          <div className="panel-heading">
-            <div className="panel-heading-title">
-              <h2>Build logs</h2>
-              <span className="architecture">logs-build/</span>
-            </div>
-            <span className="count">
-              {logList.filter((l) => l.present).length}
-            </span>
-          </div>
-          {logList.filter((l) => l.present).length === 0 ? (
-            <p className="hint">
-              Every build writes its log here. They are kept when a build's
-              artifacts are reclaimed, and removed when the build is deleted.
-            </p>
-          ) : (
-            <div className="log-rows">
-              {logList
-                .filter((l) => l.present)
-                .map((l) => (
-                  <div className="log-row" key={l.id}>
-                    <button
-                      className="log-open"
-                      onClick={() => viewLog(l)}
-                    >
-                      <strong>{names[l.target] || l.target}</strong>
-                      <small>
-                        {l.user} · {date(l.created)} · {bytes(l.size)}
-                      </small>
-                    </button>
-                    <span className={`badge ${l.state}`}>{l.state}</span>
-                    <a
-                      href={`/api/jobs/${l.id}/log`}
-                      aria-label={`Download log for ${names[l.target] || l.target}`}
-                    >
-                      ↓
-                    </a>
-                    <button
-                      className="quiet"
-                      disabled={busy || !done(l.state)}
-                      aria-label={`Delete log for ${names[l.target] || l.target}`}
-                      onClick={() => removeLog(l)}
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
+          ))}
+        </nav>
+        <main>
+          {error && (
+            <div className="alert" role="alert">
+              {error}
+              <button onClick={() => setError("")} aria-label="Dismiss error">
+                ×
+              </button>
             </div>
           )}
-        </section>
-        {/* Shown whatever build is selected: clicking another build must not
-            tear down a machine someone is watching. */}
-        {vmLive && vm.jobId && (
-          <VmConsole
-            vm={vm}
-            busy={busy || vmBusy}
-            onStop={() => stopVm(vm.jobId!)}
-          />
-        )}
-        {vm.state === "stopped" && vm.error && (
-          <p className="notice">Test machine: {vm.error}</p>
-        )}
-        <footer>
-          LinuxConsole 2026{" "}
-          <span>Builds continue when you close this page.</span>
-        </footer>
-        <TextViewer view={viewing} onClose={() => setViewing(undefined)} />
-        <ConfirmDialog ask={ask} onClose={() => setAsk(undefined)} />
-      </main>
+          {notice && (
+            <div className="notice" role="status">
+              {notice}
+            </div>
+          )}
+          {page === "repo" && repositoryBox}
+          {page === "favorites" && favoritesBox}
+          {page === "build" && (
+            <div className="workspace">
+              <aside>{newBuildBox}</aside>
+              <div className="builds">
+                {metricsBox}
+                {activityBox}
+                {detailsBox}
+              </div>
+            </div>
+          )}
+          {page === "launch" && (
+            <>
+              {launchBox}
+              {/* The console lives on this screen only: leaving it stops
+                  watching, never the machine, which keeps running until it is
+                  stopped or times out. */}
+              {vmLive && vm.jobId && (
+                <VmConsole
+                  vm={vm}
+                  busy={busy || vmBusy}
+                  onStop={() => stopVm(vm.jobId!)}
+                />
+              )}
+              {vm.state === "stopped" && vm.error && (
+                <p className="notice">Test machine: {vm.error}</p>
+              )}
+            </>
+          )}
+          {page === "flatpak" && flatpakBox}
+          {page === "logs" && logsBox}
+          {page === "profiles" && profilesBox}
+          {page === "activity" && (
+            <>
+              {metricsBox}
+              {activityBox}
+              {detailsBox}
+            </>
+          )}
+          <footer>
+            LinuxConsole 2026{" "}
+            <span>Builds continue when you close this page.</span>
+          </footer>
+          <TextViewer view={viewing} onClose={() => setViewing(undefined)} />
+          <ConfirmDialog ask={ask} onClose={() => setAsk(undefined)} />
+        </main>
+      </div>
     </div>
   );
 }

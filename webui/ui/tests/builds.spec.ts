@@ -36,17 +36,21 @@ async function fixture(
         minFreeBytes: 10 * 2 ** 30,
         message: "",
         development: false,
-        flathub: {
-          source: "built-in",
-          apps: [
-            { id: "org.videolan.VLC", name: "VLC", summary: "Media player" },
-            {
-              id: "com.github.tchx84.Flatseal",
-              name: "Flatseal",
-              summary: "Manage Flatpak permissions",
-            },
-          ],
-        },
+        vm: false,
+        vmMessage: "No /dev/kvm on this host",
+      });
+    if (path === "/api/vm") return json({ state: "stopped", viewers: 0, idleFor: 0 });
+    if (path === "/api/flathub")
+      return json({
+        source: "built-in",
+        apps: [
+          { id: "org.videolan.VLC", name: "VLC", summary: "Media player" },
+          {
+            id: "com.github.tchx84.Flatseal",
+            name: "Flatseal",
+            summary: "Manage Flatpak permissions",
+          },
+        ],
       });
     if (path === "/api/flathub/refresh")
       return json({
@@ -155,15 +159,30 @@ async function fixture(
     return json({ error: "not found" }, 404);
   });
   await page.goto("/");
+  // The menu decides what the content area shows; the repository screen is
+  // first, and every build assertion below lives on "New build".
+  await expect(
+    page.getByRole("heading", { name: "Repository" }),
+  ).toBeVisible();
+  await open(page, "New build");
   await expect(page.getByText("Build host ready")).toBeVisible();
+}
+// Click one entry of the left-hand menu.
+async function open(page: Page, label: string) {
+  await page
+    .getByRole("navigation", { name: "Workspace sections" })
+    .getByRole("button", { name: label })
+    .click();
 }
 test("profile to build, live log, completion and downloads", async ({
   page,
 }) => {
   await fixture(page);
+  await open(page, "Saved profiles");
   await page.getByPlaceholder("Profile name").fill("Daily ISO");
   await page.getByRole("button", { name: "Save current settings" }).click();
   await expect(page.getByText("Profile saved.")).toBeVisible();
+  await open(page, "New build");
   await page.getByRole("button", { name: "Queue build" }).click();
   await expect(page.locator("section.history").getByText("succeeded", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Build log")).toBeHidden();
@@ -205,38 +224,68 @@ test("failed builds show exit status and logs", async ({ page }) => {
     page.getByRole("link", { name: /linuxconsole.iso/ }),
   ).toHaveCount(0);
 });
-test("Flathub applications are selected into the build", async ({ page }) => {
+test("Flathub applications are selected on their own screen", async ({
+  page,
+}) => {
   await fixture(page);
-  const picker = page.getByRole("group", { name: "Flathub applications" });
-  await expect(picker).toBeVisible();
-  await expect(picker).toContainText("0 selected");
+  const summary = page.locator(".flatpak-summary");
+  await expect(summary).toContainText("0 Flathub applications");
+  await open(page, "Flatpak");
+  const box = page.locator("section.flathub-box");
+  await expect(box).toContainText("0 / 40 selected");
+  // Every application is listed and searchable, not just the first few.
+  await page.getByLabel("Search applications").fill("permissions");
+  await expect(page.getByRole("checkbox", { name: "VLC" })).toHaveCount(0);
+  await page.getByLabel("Search applications").fill("");
   await page.getByRole("checkbox", { name: "VLC" }).check();
-  await expect(picker).toContainText("1 selected");
+  await expect(box).toContainText("1 / 40 selected");
+  await expect(box.getByRole("button", { name: "Remove VLC" })).toBeVisible();
+
+  await open(page, "New build");
+  await expect(summary).toContainText("1 Flathub application");
+  await expect(summary).toContainText("VLC");
   // Only an ISO can carry applications.
   await page.getByLabel("Build target").selectOption("busybox");
-  await expect(picker).toBeHidden();
+  await expect(summary).toBeHidden();
   await page.getByLabel("Build target").selectOption("fast-iso");
-  await expect(page.getByRole("checkbox", { name: "VLC" })).toBeChecked();
   await page.getByRole("button", { name: "Queue build" }).click();
   await expect(page.locator("section.history").getByText("succeeded", { exact: true })).toBeVisible();
   await expect(page.getByText("1 Flathub app(s)")).toBeVisible();
+});
+test("the menu switches screens and survives a reload", async ({ page }) => {
+  await fixture(page);
+  await open(page, "Logs");
+  await expect(page.locator("section.logs-box")).toBeVisible();
+  await expect(page.locator("section.history")).toHaveCount(0);
+  expect(new URL(page.url()).hash).toBe("#/logs");
+  await page.reload();
+  await expect(page.locator("section.logs-box")).toBeVisible();
+  // The entry for the screen being shown is the current one.
+  await expect(
+    page.getByRole("navigation").getByRole("button", { name: "Logs" }),
+  ).toHaveAttribute("aria-current", "page");
+  await open(page, "Launch");
+  await expect(page.locator("section.launch")).toContainText(
+    "No /dev/kvm on this host",
+  );
 });
 test("a succeeded build can be kept and released", async ({ page }) => {
   await fixture(page);
   await page.getByRole("button", { name: "Queue build" }).click();
   await expect(page.locator("section.history").getByText("succeeded", { exact: true })).toBeVisible();
-  const kept = page.getByRole("heading", { name: "Kept builds" });
-  await expect(kept).toBeHidden();
-  // Pin it: the separate box appears, offering the ISO and the archived config.
-  await page.getByRole("button", { name: "Keep", exact: false }).first().click();
-  await expect(kept).toBeVisible();
   const box = page.locator("section.favorites");
+  await open(page, "Kept builds");
+  await expect(box).toContainText("Nothing is pinned");
+  // Pin it: the kept-builds screen then offers the ISO and archived config.
+  await open(page, "New build");
+  await page.getByRole("button", { name: "Keep", exact: false }).first().click();
+  await open(page, "Kept builds");
   await expect(box.getByRole("link", { name: /linuxconsole.iso/ })).toBeVisible();
   await expect(box.getByRole("button", { name: "config.ini" })).toBeVisible();
   await expect(box.getByRole("button", { name: "Delete" })).toBeVisible();
-  // Releasing it empties the box again.
+  // Releasing it empties the screen again.
   await box.getByRole("button", { name: "Release" }).click();
-  await expect(kept).toBeHidden();
+  await expect(box).toContainText("Nothing is pinned");
 });
 test("destructive actions confirm in a modal, never a native dialog", async ({
   page,
@@ -286,6 +335,7 @@ test("build logs are listed, searchable with highlight, and deletable", async ({
     page.locator("section.history").getByText("succeeded", { exact: true }),
   ).toBeVisible();
 
+  await open(page, "Logs");
   const box = page.locator("section.logs-box");
   await expect(box.getByRole("heading", { name: "Build logs" })).toBeVisible();
   const row = box.locator(".log-row");
@@ -326,6 +376,7 @@ test("build logs are listed, searchable with highlight, and deletable", async ({
   await expect(page.getByText("only the log file is removed")).toBeVisible();
   await page.getByRole("button", { name: "Delete log" }).last().click();
   await expect(box.locator(".log-row")).toHaveCount(0);
+  await open(page, "Build activity");
   await expect(
     page.locator("section.history").getByText("succeeded", { exact: true }),
   ).toBeVisible();
