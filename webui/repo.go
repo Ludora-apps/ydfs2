@@ -66,7 +66,12 @@ type Source struct {
 	Selected string   `json:"selected"` // the branch whose commits are listed
 	Branches []Branch `json:"branches"`
 	Commits  []Commit `json:"commits"`
-	Error    string   `json:"error,omitempty"`
+	// Ahead is how many commits Selected carries that the upstream branch does
+	// not — exactly what a pull request opened from this box would contain, and
+	// nothing to do with Repository.Ahead, which describes the checkout. Always
+	// 0 for the upstream box itself.
+	Ahead int    `json:"ahead"`
+	Error string `json:"error,omitempty"`
 }
 type Repository struct {
 	URL      string  `json:"url"`
@@ -227,7 +232,7 @@ func repoLabel(url string) string {
 
 // source describes one repository box. It reads refs only: a box is as fresh as
 // the last check, and rendering it never touches the network.
-func (a *App) source(ctx context.Context, name, label, url, prefix, head, failure string) Source {
+func (a *App) source(ctx context.Context, name, label, url, prefix, head, base, failure string) Source {
 	s := Source{Name: name, Label: label, URL: url, Error: failure}
 	if name == "local" && head == "HEAD" {
 		// A detached checkout still has somewhere to show commits from.
@@ -256,8 +261,32 @@ func (a *App) source(ctx context.Context, name, label, url, prefix, head, failur
 	}
 	if s.Selected != "" {
 		s.Commits, _ = a.commits(ctx, s.Selected, commitCount)
+		if name != upstreamRemoteName {
+			s.Ahead = a.aheadOfUpstream(ctx, s.Selected, base)
+		}
 	}
 	return s
+}
+
+// aheadOfUpstream counts the commits a revision carries that the upstream
+// branch does not: what a pull request opened from it would contain. It is
+// computed for the selected branch only — one revision walk per box, not one
+// per branch listed.
+func (a *App) aheadOfUpstream(ctx context.Context, rev, base string) int {
+	against := upstreamRefs + "/" + base
+	if !a.hasRef(ctx, against) {
+		// Upstream has never been read; the boxes cannot say yet.
+		return 0
+	}
+	out, e := a.git(ctx, "rev-list", "--count", against+".."+rev)
+	if e != nil {
+		return 0
+	}
+	n, e := strconv.Atoi(out)
+	if e != nil {
+		return 0
+	}
+	return n
 }
 
 // sources lists every repository the checkout can be moved to. The fork box is
@@ -267,11 +296,12 @@ func (a *App) sources(ctx context.Context, r *Repository, originErr string) []So
 	if r.Detached {
 		head = "HEAD"
 	}
-	list := []Source{a.source(ctx, "local", "This checkout", "", "refs/heads", head, "")}
+	base := a.prBase(ctx)
+	list := []Source{a.source(ctx, "local", "This checkout", "", "refs/heads", head, base, "")}
 	if url := a.remoteURL(ctx, originRemote); url != "" {
-		list = append(list, a.source(ctx, originRemote, repoLabel(url), url, "refs/remotes/"+originRemote, head, originErr))
+		list = append(list, a.source(ctx, originRemote, repoLabel(url), url, "refs/remotes/"+originRemote, head, base, originErr))
 	}
-	list = append(list, a.source(ctx, upstreamRemoteName, repoLabel(a.upstreamRemote()), a.upstreamRemote(), upstreamRefs, head, ""))
+	list = append(list, a.source(ctx, upstreamRemoteName, repoLabel(a.upstreamRemote()), a.upstreamRemote(), upstreamRefs, head, base, ""))
 	return list
 }
 
@@ -427,7 +457,12 @@ func (a *App) repositoryCommits(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, e.Error())
 		return
 	}
-	respond(w, map[string]any{"selected": ref, "commits": list})
+	// The box's pull request button follows the branch it is showing.
+	ahead := 0
+	if !strings.HasPrefix(ref, upstreamRemoteName+"/") {
+		ahead = a.aheadOfUpstream(ctx, ref, a.prBase(ctx))
+	}
+	respond(w, map[string]any{"selected": ref, "commits": list, "ahead": ahead})
 }
 
 // switchTo moves the working tree. A remote branch becomes — or reuses — a

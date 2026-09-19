@@ -34,6 +34,7 @@ async function fixture(
           { name: "2.12", ref: "2.12", current: true, buildable: true },
         ],
         commits: [commit("a".repeat(40), "local head")],
+        ahead: 0,
       },
       {
         name: "origin",
@@ -48,6 +49,7 @@ async function fixture(
           commit("b".repeat(40), "fork commit"),
           commit("c".repeat(40), "older fork commit"),
         ],
+        ahead: 0,
       },
       {
         name: "upstream",
@@ -63,6 +65,7 @@ async function fixture(
           },
         ],
         commits: [commit("d".repeat(40), "upstream commit")],
+        ahead: 0,
       },
     ],
   };
@@ -669,6 +672,7 @@ test("a conflicting merge is resolved before it can be applied", async ({
           { name: "2.12", ref: "2.12", current: true, buildable: true },
         ],
         commits: [commit("a".repeat(40), "local head")],
+        ahead: 1,
       },
     ],
   });
@@ -710,10 +714,16 @@ test("a conflicting merge is resolved before it can be applied", async ({
   await expect(
     panel.getByRole("button", { name: "Apply merge" }),
   ).toBeDisabled();
-  // While a resolution is open the boxes below must not move the checkout.
+  // While a resolution is open the boxes below must not move the checkout,
+  // and no pull request may claim the one worktree it is using.
   await expect(
     page.locator(".repo-source").getByRole("button", { name: "Checkout" }),
   ).toBeDisabled();
+  const frozenPR = page
+    .locator(".repo-source")
+    .getByRole("button", { name: /Propose/ });
+  await expect(frozenPR).toHaveCount(2); // the branch, and its one commit
+  for (const b of await frozenPR.all()) await expect(b).toBeDisabled();
   await panel.getByRole("button", { name: "Keep Upstream" }).click();
   expect(resolved).toBe("theirs");
   await expect(panel).toContainText("kept theirs");
@@ -760,6 +770,7 @@ test("a listed commit can be proposed upstream two ways", async ({ page }) => {
           { name: "2.12", ref: "2.12", current: true, buildable: true },
         ],
         commits: [commit("b".repeat(40), "a fix worth sending")],
+        ahead: 2,
       },
     ],
   };
@@ -780,6 +791,20 @@ test("a listed commit can be proposed upstream two ways", async ({ page }) => {
   });
   await page.reload();
   await open(page, "Repository");
+  // The whole branch, from the box header: one pull request for everything
+  // upstream does not have.
+  const box = page.locator(".repo-source", { hasText: "This checkout" });
+  const branchPR = box.getByRole("button", { name: /Propose 2\.12/ });
+  await expect(branchPR).toHaveText("PR ↗ (2)");
+  await branchPR.click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Open pull request" })
+    .click();
+  await expect.poll(() => sent).not.toBeNull();
+  expect(sent!.revision).toBe("2.12");
+  expect(sent!.mode).toBe("through");
+  sent = null;
   const row = page.locator(".commit-list li", {
     hasText: "a fix worth sending",
   });

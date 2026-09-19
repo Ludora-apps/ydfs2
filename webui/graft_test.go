@@ -395,3 +395,37 @@ func TestForkCountsAreSeparateFromUpstreamCounts(t *testing.T) {
 		t.Fatalf("a pushed commit is still reported as unpushed: forkAhead=%d forkBehind=%d", s.ForkAhead, s.ForkBehind)
 	}
 }
+
+// Each box says how many commits a pull request opened from it would carry —
+// its selected branch measured against upstream, not the checkout's own count.
+func TestSourceAheadCountsWhatAPullRequestWouldCarry(t *testing.T) {
+	a := forkFixture(t, false)
+	s := repoOf(t, request(a, "GET", "/api/repository", ""))
+	for _, src := range s.Sources {
+		if src.Ahead != 0 {
+			t.Fatalf("%s counts %d before upstream was ever read", src.Name, src.Ahead)
+		}
+	}
+	s = repoOf(t, request(a, "POST", "/api/repository/check", "{}"))
+	by := map[string]Source{}
+	for _, src := range s.Sources {
+		by[src.Name] = src
+	}
+	if by["local"].Ahead != 1 {
+		t.Fatalf("the checkout carries one commit upstream lacks, got %d", by["local"].Ahead)
+	}
+	if by[upstreamRemoteName].Ahead != 0 {
+		t.Fatalf("upstream cannot be ahead of itself: %d", by[upstreamRemoteName].Ahead)
+	}
+	// Switching the box to another branch moves the count with it.
+	w := request(a, "GET", "/api/repository/commits?ref="+upstreamRefs[len("refs/remotes/"):]+"/"+defaultBranch, "")
+	if w.Code != 200 {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	var got struct {
+		Ahead int `json:"ahead"`
+	}
+	if e := json.Unmarshal(w.Body.Bytes(), &got); e != nil || got.Ahead != 0 {
+		t.Fatalf("upstream branch reported %d ahead (%v)", got.Ahead, e)
+	}
+}

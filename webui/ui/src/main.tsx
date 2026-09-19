@@ -60,6 +60,10 @@ type Source = {
   selected: string;
   branches: Branch[];
   commits: Commit[];
+  // How many commits the selected branch carries that upstream does not —
+  // what a pull request opened from this box would contain. Unrelated to
+  // Repository.ahead, which describes the checkout.
+  ahead: number;
   error?: string;
 };
 // One file git could not merge. ours/theirs say whether that side still has a
@@ -884,6 +888,24 @@ function App() {
       },
     });
   }
+  // Proposing a whole branch: every commit it carries that upstream does not.
+  // Always the "through" shape — the pull request branch simply points at the
+  // tip, so nothing is replayed and nothing can conflict.
+  function proposeBranch(src: Source, gh: GitHub) {
+    setAsk({
+      title: `Propose ${src.selected} upstream?`,
+      body: `The ${src.ahead} commit(s) ${src.selected} carries beyond ${gh.upstream}/${gh.base} are pushed to ${gh.origin} as a branch, and opened as one pull request against ${gh.base}. Nothing is replayed, so this cannot conflict; your checkout is not touched.`,
+      confirm: "Open pull request",
+      onConfirm: () => {
+        repoAction("pr", () =>
+          api<Repository>("/repository/pr", "POST", {
+            revision: src.selected,
+            mode: "through",
+          }),
+        );
+      },
+    });
+  }
   // A commit can go upstream on its own — cherry-picked onto the upstream
   // branch, which may conflict and land in the same resolution screen — or
   // with its whole history behind it, which never can.
@@ -930,16 +952,23 @@ function App() {
   async function pickBranch(source: string, ref: string) {
     setRepoError("");
     try {
-      const got = await api<{ selected: string; commits: Commit[] }>(
-        `/repository/commits?ref=${encodeURIComponent(ref)}`,
-      );
+      const got = await api<{
+        selected: string;
+        commits: Commit[];
+        ahead: number;
+      }>(`/repository/commits?ref=${encodeURIComponent(ref)}`);
       setRepo(
         (r) =>
           r && {
             ...r,
             sources: r.sources.map((s) =>
               s.name === source
-                ? { ...s, selected: got.selected, commits: got.commits }
+                ? {
+                    ...s,
+                    selected: got.selected,
+                    commits: got.commits,
+                    ahead: got.ahead,
+                  }
                 : s,
             ),
           },
@@ -1340,6 +1369,32 @@ function App() {
               >
                 Checkout
               </button>
+              {s.name !== "upstream" && repo?.github && (
+                <button
+                  type="button"
+                  className="quiet"
+                  aria-label={`Propose ${s.selected} upstream`}
+                  title={
+                    !repo.github.available
+                      ? repo.github.error
+                      : s.ahead === 0
+                        ? `${repo.github.upstream} already has everything on ${s.selected}`
+                        : `Open one pull request against ${repo.github.upstream}/${repo.github.base}`
+                  }
+                  // A pull request never touches the working tree, so a dirty
+                  // checkout is no reason to refuse one; an open resolution is,
+                  // because there is only one worktree to replay in.
+                  disabled={
+                    !!repoBusy ||
+                    !repo.github.available ||
+                    !!repo.graft ||
+                    s.ahead === 0
+                  }
+                  onClick={() => proposeBranch(s, repo.github!)}
+                >
+                  {repoBusy === "pr" ? "Opening…" : `PR ↗ (${s.ahead})`}
+                </button>
+              )}
             </div>
             {s.error && <p className="hint error">{s.error}</p>}
             <ol className="commit-list">
@@ -1364,7 +1419,7 @@ function App() {
                             : repo.github.error
                         }
                         disabled={
-                          frozen || !!repoBusy || !repo.github.available
+                          !!repoBusy || !repo.github.available || !!repo.graft
                         }
                         onClick={() => proposePR(c, repo.github!)}
                       >
