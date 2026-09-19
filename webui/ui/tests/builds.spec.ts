@@ -603,3 +603,191 @@ test("repository boxes list commits and confirm a checkout", async ({
   await expect(page.getByText("Checkout detached at")).toBeVisible();
   expect(checkouts).toBe(1);
 });
+
+// The merge resolution screen: a conflicting merge is prepared, its files are
+// resolved one at a time, and only then can it be applied.
+test("a conflicting merge is resolved before it can be applied", async ({
+  page,
+}) => {
+  await fixture(page);
+  const commit = (revision: string, subject: string) => ({
+    revision,
+    subject,
+    author: "tester",
+    date: "2026-09-18T10:00:00Z",
+  });
+  const github = {
+    available: true,
+    origin: "Ludora-apps/ydfs2",
+    upstream: "linuxconsole-org/ydfs2",
+    base: "2.12",
+  };
+  const conflict = (resolved: string) => ({
+    path: "2.12/packages/list-x86_64",
+    kind: "content",
+    ours: true,
+    theirs: true,
+    binary: false,
+    resolved,
+  });
+  const graft = (resolved: string) => ({
+    kind: "merge",
+    base: "a".repeat(40),
+    branch: "2.12",
+    revision: "d".repeat(40),
+    subject: "upstream commit",
+    clean: false,
+    files: [conflict(resolved)],
+    oursLabel: "This checkout",
+    theirsLabel: "Upstream",
+    openedAt: "2026-09-19T10:00:00Z",
+  });
+  const state = (g?: unknown) => ({
+    url: "https://github.com/linuxconsole-org/ydfs2",
+    branch: "2.12",
+    detached: false,
+    tag: "2026",
+    dirty: false,
+    local: commit("a".repeat(40), "local head"),
+    upstream: commit("d".repeat(40), "upstream commit"),
+    ahead: 1,
+    behind: 1,
+    fastForward: false,
+    github,
+    graft: g,
+    sources: [
+      {
+        name: "local",
+        label: "This checkout",
+        url: "",
+        selected: "2.12",
+        branches: [
+          { name: "2.12", ref: "2.12", current: true, buildable: true },
+        ],
+        commits: [commit("a".repeat(40), "local head")],
+      },
+    ],
+  });
+  let resolved = "";
+  let applied = 0;
+  const json = (route: any, v: unknown) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(v),
+    });
+  await page.route("**/api/repository**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/repository/merge/preview")
+      return json(route, state(graft("")));
+    if (path === "/api/repository/graft/resolve") {
+      resolved = (route.request().postDataJSON() as any).choice;
+      return json(route, state(graft(resolved)));
+    }
+    if (path === "/api/repository/graft/apply") {
+      applied++;
+      return json(route, state(undefined));
+    }
+    return json(route, state(resolved && applied ? undefined : undefined));
+  });
+  // The app read the repository when it mounted; reload so it reads the state
+  // these routes describe.
+  await page.reload();
+  await open(page, "Repository");
+  // Nothing is being resolved yet.
+  await expect(page.locator(".graft")).toHaveCount(0);
+  await page.getByRole("button", { name: "Check merge" }).click();
+  const panel = page.locator(".graft");
+  await expect(panel).toContainText("Merge being prepared");
+  await expect(panel).toContainText("2.12/packages/list-x86_64");
+  await expect(panel).toContainText("changed on both sides");
+  await expect(panel).toContainText("1 of 1 file(s) left to resolve");
+  // Nothing has moved in the checkout, and it cannot be applied yet.
+  await expect(
+    panel.getByRole("button", { name: "Apply merge" }),
+  ).toBeDisabled();
+  // While a resolution is open the boxes below must not move the checkout.
+  await expect(
+    page.locator(".repo-source").getByRole("button", { name: "Checkout" }),
+  ).toBeDisabled();
+  await panel.getByRole("button", { name: "Keep Upstream" }).click();
+  expect(resolved).toBe("theirs");
+  await expect(panel).toContainText("kept theirs");
+  const apply = panel.getByRole("button", { name: "Apply merge" });
+  await expect(apply).toBeEnabled();
+  await apply.click();
+  await expect(page.locator(".graft")).toHaveCount(0);
+  expect(applied).toBe(1);
+});
+
+// A commit goes upstream as itself or with its history; both answers live in
+// the one confirmation dialog, never in a native browser prompt.
+test("a listed commit can be proposed upstream two ways", async ({ page }) => {
+  await fixture(page);
+  const commit = (revision: string, subject: string) => ({
+    revision,
+    subject,
+    author: "tester",
+    date: "2026-09-18T10:00:00Z",
+  });
+  const state = {
+    url: "https://github.com/linuxconsole-org/ydfs2",
+    branch: "2.12",
+    detached: false,
+    tag: "2026",
+    dirty: false,
+    local: commit("a".repeat(40), "local head"),
+    ahead: 2,
+    behind: 0,
+    fastForward: true,
+    github: {
+      available: true,
+      origin: "Ludora-apps/ydfs2",
+      upstream: "linuxconsole-org/ydfs2",
+      base: "2.12",
+    },
+    sources: [
+      {
+        name: "local",
+        label: "This checkout",
+        url: "",
+        selected: "2.12",
+        branches: [
+          { name: "2.12", ref: "2.12", current: true, buildable: true },
+        ],
+        commits: [commit("b".repeat(40), "a fix worth sending")],
+      },
+    ],
+  };
+  let sent: { revision: string; mode: string } | null = null;
+  await page.route("**/api/repository**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/repository/pr")
+      sent = route.request().postDataJSON() as typeof sent;
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(
+        path === "/api/repository/pr"
+          ? { ...state, pullRequest: "https://github.com/up/ydfs2/pull/7" }
+          : state,
+      ),
+    });
+  });
+  await page.reload();
+  await open(page, "Repository");
+  const row = page.locator(".commit-list li", {
+    hasText: "a fix worth sending",
+  });
+  await row.getByRole("button", { name: /Propose/ }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("linuxconsole-org/ydfs2");
+  await expect(dialog).toContainText("Ludora-apps/ydfs2");
+  // The second answer: this commit and everything before it.
+  await dialog.getByRole("button", { name: "…and those before it" }).click();
+  await expect.poll(() => sent).not.toBeNull();
+  expect(sent!.mode).toBe("through");
+  expect(sent!.revision).toBe("b".repeat(40));
+  // Where it landed is shown as a link, not swallowed by a transient notice.
+  await expect(page.getByRole("link", { name: /pull\/7/ })).toBeVisible();
+});

@@ -62,6 +62,42 @@ type Source = {
   commits: Commit[];
   error?: string;
 };
+// One file git could not merge. ours/theirs say whether that side still has a
+// version at all: a side that deleted the file offers "keep the deletion"
+// rather than a version to choose.
+type Conflict = {
+  path: string;
+  kind: "content" | "add/add" | "modify/delete" | "delete/modify";
+  ours: boolean;
+  theirs: boolean;
+  binary: boolean;
+  resolved: "" | "ours" | "theirs" | "both" | "edited";
+};
+// A merge or a cherry-pick waiting to be resolved. It happens in a worktree of
+// its own, never in the checkout, so leaving this screen — or reloading it —
+// changes nothing: the graft rides along with every repository response.
+type Graft = {
+  kind: "merge" | "pick";
+  base: string;
+  branch: string;
+  revision: string;
+  subject: string;
+  clean: boolean;
+  files: Conflict[];
+  // The two sides swap between a merge and a cherry-pick, so the server names
+  // them rather than leaving the browser to guess which is which.
+  oursLabel: string;
+  theirsLabel: string;
+  openedAt: string;
+  pr?: { mode: "single" | "through"; branch: string; base: string };
+};
+type GitHub = {
+  available: boolean;
+  origin?: string;
+  upstream?: string;
+  base?: string;
+  error?: string;
+};
 type Repository = {
   url: string;
   branch: string;
@@ -75,6 +111,10 @@ type Repository = {
   fastForward: boolean;
   checkedAt?: string;
   sources: Source[];
+  github?: GitHub;
+  graft?: Graft;
+  // Set only on the response that opened one: where the pull request landed.
+  pullRequest?: string;
 };
 type Capabilities = {
   targets: string[];
@@ -247,6 +287,12 @@ type TextView = {
   compact?: boolean;
   deleteLabel?: string;
   onDelete?: () => void;
+  // A conflicting file is the one text here that is written as well as read.
+  // Editing lives in this viewer rather than in a dialog of its own, so there
+  // stays exactly one reader — and now writer — for every file.
+  editable?: boolean;
+  saveLabel?: string;
+  onSave?: (text: string) => void;
 };
 
 // One reader for every build text file: the log tail and the archived
@@ -350,6 +396,7 @@ function TextViewer({
             </div>
             <form
               className="log-search"
+              hidden={view.editable}
               onSubmit={(e) => {
                 e.preventDefault();
                 step(1);
@@ -394,6 +441,15 @@ function TextViewer({
               </button>
             </form>
             <div className="logviewer-actions">
+              {view.editable && (
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={() => view.onSave?.(text)}
+                >
+                  {view.saveLabel || "Save"}
+                </button>
+              )}
               <a href={view.url}>Download ↓</a>
               {view.onDelete && (
                 <button type="button" className="quiet" onClick={view.onDelete}>
@@ -411,7 +467,17 @@ function TextViewer({
             tabIndex={0}
             aria-label="File contents"
           >
-            <pre>{loadError || (text ? rendered : "Loading…")}</pre>
+            {view.editable ? (
+              <textarea
+                className="logviewer-edit"
+                spellCheck={false}
+                aria-label="File contents"
+                value={loadError || text}
+                onChange={(e) => setText(e.target.value)}
+              />
+            ) : (
+              <pre>{loadError || (text ? rendered : "Loading…")}</pre>
+            )}
           </div>
         </div>
       )}
@@ -425,6 +491,9 @@ type Confirmation = {
   confirm: string;
   danger?: boolean;
   onConfirm: () => void;
+  // A second way to say yes, for a question with two answers rather than one —
+  // a pull request carrying one commit, or that commit and its history.
+  alternate?: { label: string; onPick: () => void };
 };
 
 // The app never uses window.confirm/alert: a native dialog cannot be themed,
@@ -475,6 +544,18 @@ function ConfirmDialog({
             >
               Cancel
             </button>
+            {ask.alternate && (
+              <button
+                type="button"
+                className="quiet"
+                onClick={() => {
+                  ask.alternate?.onPick();
+                  onClose();
+                }}
+              >
+                {ask.alternate.label}
+              </button>
+            )}
             <button
               type="button"
               className={ask.danger ? "danger" : "primary"}
@@ -687,6 +768,9 @@ function App() {
   const [repo, setRepo] = useState<Repository>();
   const [repoBusy, setRepoBusy] = useState("");
   const [repoError, setRepoError] = useState("");
+  // Where the last pull request landed. Kept out of the notice bar so the link
+  // stays clickable next to the commits it came from.
+  const [pullRequest, setPullRequest] = useState("");
   async function loadRepo(check: boolean) {
     setRepoError("");
     if (check) setRepoBusy("check");
@@ -702,30 +786,135 @@ function App() {
       if (check) setRepoBusy("");
     }
   }
+  // Every repository action answers with the whole screen, so they all share
+  // one shape: mark the screen busy, replace it with what came back.
+  async function repoAction(
+    kind: string,
+    run: () => Promise<Repository>,
+  ): Promise<Repository | undefined> {
+    setRepoBusy(kind);
+    setRepoError("");
+    try {
+      const r = await run();
+      setRepo(r);
+      if (r.pullRequest) setPullRequest(r.pullRequest);
+      return r;
+    } catch (e) {
+      setRepoError((e as Error).message);
+      return undefined;
+    } finally {
+      setRepoBusy("");
+    }
+  }
+  // Checking and merging are the same request: the merge is replayed in a
+  // worktree of its own either way, and the only difference is whether a clean
+  // result is then applied to the checkout without asking again.
+  async function previewMerge(thenApply: boolean) {
+    const r = await repoAction("merge", () =>
+      api<Repository>("/repository/merge/preview", "POST", {}),
+    );
+    if (thenApply && r?.graft?.clean) await applyGraft();
+  }
   function updateRepo() {
     const merging = !!repo && !repo.fastForward;
     setAsk({
       title: merging ? "Merge upstream changes?" : "Update this checkout?",
       body: merging
-        ? "The latest upstream commit is merged into this checkout. Local commits are kept; a conflicting merge is rolled back. Queued and running builds keep the snapshot they were submitted with."
+        ? "Upstream is replayed onto this checkout in a worktree of its own. If it merges cleanly the checkout moves onto the result; if it conflicts, nothing here changes and the conflicting files are listed for you to resolve. Queued and running builds keep the snapshot they were submitted with."
         : "This checkout fast-forwards to the latest upstream commit. Queued and running builds keep the snapshot they were submitted with.",
       confirm: merging ? "Merge" : "Update",
-      onConfirm: runUpdateRepo,
+      onConfirm: () => previewMerge(true),
     });
   }
-  async function runUpdateRepo() {
-    setRepoBusy("update");
-    setRepoError("");
-    try {
-      const r = await api<Repository>("/repository/update", "POST", {});
-      setRepo(r);
+  async function applyGraft() {
+    const r = await repoAction("apply", () =>
+      api<Repository>("/repository/graft/apply", "POST", {}),
+    );
+    if (r && !r.pullRequest)
       setNotice(`Checkout updated to ${r.local.revision.slice(0, 12)}.`);
-      await refresh();
-    } catch (e) {
-      setRepoError((e as Error).message);
-    } finally {
-      setRepoBusy("");
-    }
+    await refresh();
+  }
+  function resolveConflict(path: string, choice: string, content = "") {
+    repoAction("resolve", () =>
+      api<Repository>("/repository/graft/resolve", "POST", {
+        path,
+        choice,
+        content,
+      }),
+    );
+  }
+  function abortGraft(g: Graft) {
+    setAsk({
+      title:
+        g.kind === "pick"
+          ? "Abandon this pull request?"
+          : "Abandon this merge?",
+      body: "Every resolution made so far is discarded. The checkout is untouched either way — nothing has been applied to it yet.",
+      confirm: "Abandon",
+      danger: true,
+      onConfirm: () => {
+        repoAction("abort", () =>
+          api<Repository>("/repository/graft", "DELETE"),
+        );
+      },
+    });
+  }
+  function pushOrigin() {
+    if (!repo) return;
+    setAsk({
+      title: `Push ${repo.branch} to ${repo.github?.origin || "origin"}?`,
+      body: `Your ${repo.ahead} local commit(s) are published on the fork. The push is fast-forward only, so nothing already there can be lost.`,
+      confirm: "Push",
+      onConfirm: () => {
+        repoAction("push", () =>
+          api<Repository>("/repository/push", "POST", {}),
+        ).then((r) => {
+          if (r) setNotice(`Pushed ${r.branch} to ${r.github?.origin}.`);
+        });
+      },
+    });
+  }
+  // A commit can go upstream on its own — cherry-picked onto the upstream
+  // branch, which may conflict and land in the same resolution screen — or
+  // with its whole history behind it, which never can.
+  function proposePR(c: Commit, gh: GitHub) {
+    const open = (mode: "single" | "through") =>
+      repoAction("pr", () =>
+        api<Repository>("/repository/pr", "POST", {
+          revision: c.revision,
+          mode,
+        }),
+      );
+    setAsk({
+      title: "Open a pull request upstream?",
+      body: `“${c.subject}” (${c.revision.slice(0, 12)}) is proposed to ${gh.upstream} on ${gh.base}, from a branch pushed to ${gh.origin}. Choose whether it carries this commit alone, replayed onto upstream, or this commit and every commit before it.`,
+      confirm: "This commit only",
+      alternate: {
+        label: "…and those before it",
+        onPick: () => open("through"),
+      },
+      onConfirm: () => open("single"),
+    });
+  }
+  // A conflicting file is read — and, when edited, written — through the same
+  // viewer as the build log and config.ini.
+  function viewConflict(g: Graft, c: Conflict, side: string, label: string) {
+    setViewing({
+      key: `graft:${c.path}:${side}:${c.resolved}`,
+      title: c.path,
+      subtitle: label,
+      url: `/api/repository/graft/file?path=${encodeURIComponent(c.path)}&side=${side}`,
+      compact: true,
+      editable: side === "merged",
+      saveLabel: "Save resolution",
+      onSave:
+        side === "merged"
+          ? (text) => {
+              resolveConflict(c.path, "edited", text);
+              setViewing(undefined);
+            }
+          : undefined,
+    });
   }
   // Only the picked box changes: the other two keep the commits they show.
   async function pickBranch(source: string, ref: string) {
@@ -1090,7 +1279,16 @@ function App() {
     <div className="repo-sources">
       {(repo?.sources ?? []).map((s) => {
         const picked = s.branches.find((b) => b.ref === s.selected);
-        const frozen = !!repoBusy || !repo || repo.dirty;
+        // An upstream check is read-only and runs on every page load, so it
+        // must not freeze the boxes; a switch or a merge in flight must.
+        const frozen =
+          repoBusy === "checkout" ||
+          repoBusy === "update" ||
+          !repo ||
+          repo.dirty ||
+          // Moving the checkout out from under an open resolution would strand
+          // it: the merge it prepared could no longer be fast-forwarded on.
+          !!repo.graft;
         return (
           <section className="repo-source" key={s.name}>
             <div className="repo-source-head">
@@ -1144,15 +1342,35 @@ function App() {
                       {date(c.date)}
                     </small>
                   </div>
-                  <button
-                    type="button"
-                    className="quiet"
-                    aria-label={`Check out ${c.revision.slice(0, 12)}`}
-                    disabled={frozen || c.revision === repo?.local.revision}
-                    onClick={() => checkoutRef(c.revision, true)}
-                  >
-                    Checkout
-                  </button>
+                  <div className="commit-actions">
+                    {s.name !== "upstream" && repo?.github && (
+                      <button
+                        type="button"
+                        className="quiet"
+                        aria-label={`Propose ${c.revision.slice(0, 12)} upstream`}
+                        title={
+                          repo.github.available
+                            ? `Open a pull request against ${repo.github.upstream}`
+                            : repo.github.error
+                        }
+                        disabled={
+                          frozen || !!repoBusy || !repo.github.available
+                        }
+                        onClick={() => proposePR(c, repo.github!)}
+                      >
+                        PR ↗
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="quiet"
+                      aria-label={`Check out ${c.revision.slice(0, 12)}`}
+                      disabled={frozen || c.revision === repo?.local.revision}
+                      onClick={() => checkoutRef(c.revision, true)}
+                    >
+                      Checkout
+                    </button>
+                  </div>
                 </li>
               ))}
               {s.commits.length === 0 && (
@@ -1167,6 +1385,161 @@ function App() {
         );
       })}
     </div>
+  );
+
+  // The merge or cherry-pick waiting to be resolved. It lives inside the
+  // Repository box, above the source boxes it froze, because it is about the
+  // checkout rather than about any one repository.
+  const g = repo?.graft;
+  const graftBox = g && (
+    <section className="graft">
+      <div className="graft-head">
+        <div>
+          <p className="eyebrow">
+            {g.kind === "pick"
+              ? "Pull request being prepared"
+              : "Merge being prepared"}
+          </p>
+          <strong title={g.subject}>{g.subject}</strong>
+          <small>
+            {g.kind === "pick"
+              ? `${g.revision.slice(0, 12)} replayed onto ${g.branch}, to be proposed as ${g.pr?.branch}`
+              : `upstream ${g.revision.slice(0, 12)} merged into ${g.branch}`}
+            {" · "}
+            {g.clean
+              ? "no conflict"
+              : `${g.files.filter((c) => !c.resolved).length} of ${g.files.length} file(s) left to resolve`}
+          </small>
+        </div>
+        <div className="repo-actions">
+          <button
+            type="button"
+            className="quiet"
+            disabled={!!repoBusy}
+            onClick={() => abortGraft(g)}
+          >
+            Abandon
+          </button>
+          <button
+            type="button"
+            className="update"
+            disabled={
+              !!repoBusy || g.files.some((c) => !c.resolved) || repo.dirty
+            }
+            onClick={applyGraft}
+          >
+            {repoBusy === "apply"
+              ? "Applying…"
+              : g.kind === "pick"
+                ? "Open pull request"
+                : "Apply merge"}
+          </button>
+        </div>
+      </div>
+      <p className="hint">
+        Nothing has moved in this checkout: the replay happens in a worktree of
+        its own, and only the final step fast-forwards the checkout onto it.
+        Abandoning leaves everything exactly as it is now.
+      </p>
+      {g.files.length === 0 ? (
+        <p className="hint">It applies cleanly — nothing to resolve.</p>
+      ) : (
+        <ul className="graft-files">
+          {g.files.map((c) => (
+            <li key={c.path} className={c.resolved ? "resolved" : ""}>
+              <div className="graft-file">
+                <strong title={c.path}>{c.path}</strong>
+                <small>
+                  {c.kind === "content"
+                    ? "changed on both sides"
+                    : c.kind === "add/add"
+                      ? "added on both sides"
+                      : c.ours
+                        ? `kept by ${g.oursLabel}, deleted by ${g.theirsLabel}`
+                        : `deleted by ${g.oursLabel}, kept by ${g.theirsLabel}`}
+                  {c.binary && " · binary"}
+                  {c.resolved && ` · kept ${c.resolved}`}
+                </small>
+              </div>
+              <div className="graft-choice">
+                <button
+                  type="button"
+                  className={c.resolved === "ours" ? "primary" : "quiet"}
+                  disabled={!!repoBusy}
+                  onClick={() => resolveConflict(c.path, "ours")}
+                >
+                  {c.ours ? `Keep ${g.oursLabel}` : "Keep the deletion"}
+                </button>
+                <button
+                  type="button"
+                  className={c.resolved === "theirs" ? "primary" : "quiet"}
+                  disabled={!!repoBusy}
+                  onClick={() => resolveConflict(c.path, "theirs")}
+                >
+                  {c.theirs ? `Keep ${g.theirsLabel}` : "Keep the deletion"}
+                </button>
+                {c.ours && c.theirs && !c.binary && (
+                  <button
+                    type="button"
+                    className={c.resolved === "both" ? "primary" : "quiet"}
+                    disabled={!!repoBusy}
+                    onClick={() => resolveConflict(c.path, "both")}
+                  >
+                    Keep both
+                  </button>
+                )}
+                {!c.binary && (
+                  <button
+                    type="button"
+                    className={c.resolved === "edited" ? "primary" : "quiet"}
+                    disabled={!!repoBusy}
+                    onClick={() =>
+                      viewConflict(
+                        g,
+                        c,
+                        "merged",
+                        "with conflict markers — edit and save to resolve",
+                      )
+                    }
+                  >
+                    Edit…
+                  </button>
+                )}
+              </div>
+              <div className="graft-views">
+                {c.ours && (
+                  <button
+                    type="button"
+                    className="link"
+                    onClick={() => viewConflict(g, c, "ours", g.oursLabel)}
+                  >
+                    {g.oursLabel}
+                  </button>
+                )}
+                {c.theirs && (
+                  <button
+                    type="button"
+                    className="link"
+                    onClick={() => viewConflict(g, c, "theirs", g.theirsLabel)}
+                  >
+                    {g.theirsLabel}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="link"
+                  onClick={() =>
+                    viewConflict(g, c, "diff", "the two sides, side by side")
+                  }
+                >
+                  Diff
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 
   const repositoryBox = (
@@ -1192,15 +1565,51 @@ function App() {
           >
             {repoBusy === "check" ? "Checking…" : "↻ Check upstream"}
           </button>
+          {repo?.github?.available && (
+            <button
+              type="button"
+              className="quiet"
+              title={`Publish ${repo.branch} on ${repo.github.origin}`}
+              disabled={
+                !!repoBusy ||
+                repo.dirty ||
+                repo.detached ||
+                repo.ahead === 0 ||
+                !!repo.graft
+              }
+              onClick={pushOrigin}
+            >
+              {repoBusy === "push" ? "Pushing…" : `↑ Push (${repo.ahead})`}
+            </button>
+          )}
+          <button
+            type="button"
+            className="quiet"
+            title="Replay upstream onto this checkout without applying it, to see whether it conflicts"
+            disabled={
+              !!repoBusy ||
+              !repo?.upstream ||
+              repo.behind === 0 ||
+              repo.dirty ||
+              !!repo.graft
+            }
+            onClick={() => previewMerge(false)}
+          >
+            {repoBusy === "merge" ? "Checking…" : "⑂ Check merge"}
+          </button>
           <button
             type="button"
             className="update"
             disabled={
-              !!repoBusy || !repo?.upstream || repo.behind === 0 || repo.dirty
+              !!repoBusy ||
+              !repo?.upstream ||
+              repo.behind === 0 ||
+              repo.dirty ||
+              !!repo.graft
             }
             onClick={updateRepo}
           >
-            {repoBusy === "update"
+            {repoBusy === "merge" || repoBusy === "apply"
               ? "Updating…"
               : repo && repo.behind > 0
                 ? `↓ Update (${repo.behind})`
@@ -1247,6 +1656,15 @@ function App() {
           restore it.
         </p>
       )}
+      {pullRequest && (
+        <p className="repo-status">
+          Pull request opened:{" "}
+          <a href={pullRequest} target="_blank" rel="noreferrer">
+            {pullRequest} ↗
+          </a>
+        </p>
+      )}
+      {graftBox}
       {repoSources}
     </section>
   );

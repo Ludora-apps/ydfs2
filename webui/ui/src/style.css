@@ -957,6 +957,108 @@ footer {
   font-size: 11px;
   color: var(--muted);
 }
+/* The per-commit buttons must not shrink: the subject beside them is the part
+   that gets ellipsised. */
+.commit-actions {
+  display: flex;
+  flex: none;
+  gap: 6px;
+}
+
+/* A merge or cherry-pick being resolved. It sits inside the Repository box,
+   above the source boxes it freezes. */
+.graft {
+  margin-top: 16px;
+  padding: 14px;
+  /* Selected rather than subtle: an open resolution is the one thing on this
+     screen that is waiting on the operator. */
+  border: 1px solid var(--selected-border);
+  border-radius: 10px;
+  background: var(--input);
+}
+.graft-head {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.graft-head strong {
+  display: block;
+  font-size: 13px;
+  margin-top: 2px;
+}
+.graft-head small {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.graft .hint {
+  margin: 10px 0 0;
+}
+.graft-files {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+}
+.graft-files li {
+  padding: 10px 0;
+  border-top: 1px solid var(--subtle-border);
+}
+.graft-files li:first-child {
+  border-top: 0;
+}
+.graft-file strong {
+  display: block;
+  font:
+    12px ui-monospace,
+    SFMono-Regular,
+    Consolas,
+    monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Unresolved is the state that needs acting on, so it is the one that is
+   coloured; a resolved row recedes. */
+.graft-file small {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--danger-text);
+}
+.graft-files li.resolved .graft-file small {
+  color: var(--muted);
+}
+.graft-choice,
+.graft-views {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.graft-choice button {
+  padding: 5px 9px;
+  font-size: 10px;
+}
+.graft-views {
+  gap: 12px;
+  margin-top: 6px;
+}
+/* A reading affordance, not an action: it opens the file in the viewer. */
+.graft-views .link {
+  border: 0;
+  padding: 0;
+  background: none;
+  font-size: 10px;
+  color: var(--accent-text);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.graft-views .link:hover {
+  opacity: 0.8;
+}
 /* Confirmation modal. The app never uses window.confirm/alert, so this is the
    single dialog pattern: <dialog> supplies the focus trap, Escape and backdrop,
    and the tokens keep it in the app's theme. */
@@ -1109,6 +1211,27 @@ footer {
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+/* Editing a conflicting file happens in the same viewer, so the textarea has
+   to fill it exactly as the <pre> does and carry the same terminal palette. */
+.logviewer-text .logviewer-edit {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 40vh;
+  box-sizing: border-box;
+  border: 0;
+  padding: 0;
+  resize: none;
+  background: transparent;
+  color: inherit;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.logviewer-text .logviewer-edit:focus-visible {
+  outline: 0;
 }
 .logviewer-text mark {
   background: #f5d76e;

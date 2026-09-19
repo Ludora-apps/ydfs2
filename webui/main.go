@@ -35,6 +35,7 @@ type App struct {
 	mu                         sync.Mutex
 	repoMu                     sync.Mutex
 	upstreamFrom               string
+	forkFrom                   string
 	upstream                   *Commit
 	upstreamAt                 time.Time
 	originError                string
@@ -52,6 +53,13 @@ type App struct {
 	vmLast  *VM
 	kvm     string
 	vmImage string
+	// The single merge or cherry-pick being resolved (see graft.go). Its own
+	// lock for the same reason as vmMu: resolving a conflict happens in a
+	// worktree of its own and must never wait on, or hold up, a build.
+	// Lock order, wherever both are needed, is a.mu then a.graftMu.
+	graftMu sync.Mutex
+	graft   *Graft
+	gh      string
 }
 
 func main() {
@@ -136,7 +144,7 @@ func main() {
 	defer db.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	a := &App{db: db, repo: absRepo, data: absData, origin: *origin, secret: os.Getenv("YDFS_PROXY_SECRET"), dev: *dev, minFree: *min * 1024 * 1024 * 1024, users: map[string]bool{}, wake: make(chan struct{}, 1), ctx: ctx, docker: "docker", kvm: "/dev/kvm", vmImage: vmImageTag}
+	a := &App{db: db, repo: absRepo, data: absData, origin: *origin, secret: os.Getenv("YDFS_PROXY_SECRET"), dev: *dev, minFree: *min * 1024 * 1024 * 1024, users: map[string]bool{}, wake: make(chan struct{}, 1), ctx: ctx, docker: "docker", kvm: "/dev/kvm", vmImage: vmImageTag, gh: "gh"}
 	for _, u := range strings.Split(os.Getenv("YDFS_ALLOWED_USERS"), ",") {
 		if u = strings.TrimSpace(u); u != "" {
 			a.users[strings.ToLower(u)] = true
@@ -155,6 +163,9 @@ func main() {
 	// belongs to a session nobody can reach any more.
 	reapCtx, reapCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	a.reapVMs(reapCtx)
+	// A conflict resolution is just as ephemeral, and its worktree is hundreds
+	// of megabytes belonging to a session nobody can reach any more.
+	a.reapGrafts(reapCtx)
 	reapCancel()
 	done := make(chan struct{})
 	go func() { defer close(done); a.worker() }()
@@ -213,6 +224,13 @@ func (a *App) handler() http.Handler {
 	mux.HandleFunc("POST /api/repository/update", a.repositoryUpdate)
 	mux.HandleFunc("GET /api/repository/commits", a.repositoryCommits)
 	mux.HandleFunc("POST /api/repository/checkout", a.repositoryCheckout)
+	mux.HandleFunc("POST /api/repository/merge/preview", a.repositoryMergePreview)
+	mux.HandleFunc("POST /api/repository/graft/resolve", a.graftResolve)
+	mux.HandleFunc("POST /api/repository/graft/apply", a.graftApply)
+	mux.HandleFunc("DELETE /api/repository/graft", a.graftAbort)
+	mux.HandleFunc("GET /api/repository/graft/file", a.graftFile)
+	mux.HandleFunc("POST /api/repository/push", a.repositoryPush)
+	mux.HandleFunc("POST /api/repository/pr", a.repositoryPR)
 	mux.HandleFunc("GET /api/flathub", a.flathubCatalogue)
 	mux.HandleFunc("POST /api/flathub/refresh", a.flathubRefresh)
 	mux.HandleFunc("GET /api/jobs", func(w http.ResponseWriter, r *http.Request) {

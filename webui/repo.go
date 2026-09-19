@@ -81,23 +81,49 @@ type Repository struct {
 	FastForward bool     `json:"fastForward"`
 	CheckedAt   string   `json:"checkedAt,omitempty"`
 	Sources     []Source `json:"sources"`
+	// GitHub says whether a pull request can be opened from this checkout, and
+	// Graft carries the merge or cherry-pick waiting to be resolved. Both ride
+	// along with every repository response so a browser that reloads mid-merge
+	// finds the session again without a second request.
+	GitHub *GitHub `json:"github,omitempty"`
+	Graft  *Graft  `json:"graft,omitempty"`
+	// PullRequest is the URL of a pull request this very request opened. It is
+	// never stored: it is how the browser learns where the PR landed.
+	PullRequest string `json:"pullRequest,omitempty"`
 }
 
-// git runs a repository command with a deadline and without any interactive
-// credential or SSH prompt, so a network call can never wedge a request.
-func (a *App) git(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", a.repo}, args...)...)
+// gitRaw runs a repository command with a deadline and without any interactive
+// credential or SSH prompt, so a network call can never wedge a request. dir
+// selects the tree it runs in: the checkout itself, or the linked worktree a
+// conflict is being resolved in (see graft.go). env carries extra variables —
+// a credential for a push, never anything that would show up in argv.
+func (a *App) gitRaw(ctx context.Context, dir string, env []string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
 	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=", "GIT_SSH_COMMAND=ssh -oBatchMode=yes")
+	cmd.Env = append(cmd.Env, env...)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, e := cmd.Output()
 	if e != nil {
 		if s := strings.TrimSpace(stderr.String()); s != "" {
-			return "", errors.New(s)
+			return nil, errors.New(s)
 		}
+		return nil, e
+	}
+	return out, nil
+}
+
+// gitAt is gitRaw with the output trimmed, which is what every caller reading a
+// revision, a ref name or a status line wants.
+func (a *App) gitAt(ctx context.Context, dir string, args ...string) (string, error) {
+	out, e := a.gitRaw(ctx, dir, nil, args...)
+	if e != nil {
 		return "", e
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+func (a *App) git(ctx context.Context, args ...string) (string, error) {
+	return a.gitAt(ctx, a.repo, args...)
 }
 
 // commits reads the newest n commits of a revision, one per line.
@@ -284,6 +310,10 @@ func (a *App) state(ctx context.Context) (*Repository, error) {
 		}
 	}
 	r.Sources = a.sources(ctx, r, originErr)
+	r.GitHub = a.github(ctx)
+	a.graftMu.Lock()
+	r.Graft = a.graft
+	a.graftMu.Unlock()
 	return r, nil
 }
 func (a *App) counts(ctx context.Context, rev string) (int, int, error) {
@@ -467,61 +497,69 @@ func (a *App) mergeIdentity(ctx context.Context) []string {
 	return []string{"-c", "user.name=LinuxConsole build manager", "-c", "user.email=ydfs-web@localhost"}
 }
 
-// merge brings the upstream commit into the checkout: a fast-forward when the
-// checkout has no commits of its own, a merge commit otherwise (a fork carrying
-// local work is permanently diverged, which is normal, not an error). A merge
-// that conflicts is rolled back and reported with the conflicting paths.
-func (a *App) merge(ctx context.Context, rev string, fastForward bool) error {
-	if fastForward {
-		_, e := a.git(ctx, "merge", "--ff-only", rev)
-		return e
-	}
-	args := append(a.mergeIdentity(ctx), "merge", "--no-edit", "-m", "Merge upstream "+rev[:12]+" into "+a.branch(ctx), rev)
-	_, e := a.git(ctx, args...)
-	if e == nil {
-		return nil
-	}
-	conflicts, _ := a.git(ctx, "diff", "--name-only", "--diff-filter=U")
-	a.git(ctx, "merge", "--abort")
-	if conflicts != "" {
-		return errors.New("conflicting changes in: " + strings.Join(strings.Fields(conflicts), ", ") + " — merge it with git, nothing was changed")
-	}
-	return e
-}
-
-// repositoryUpdate merges the upstream branch into the checkout. Running and
-// queued builds are unaffected: each one already built its own snapshot of the
-// working tree when it was submitted.
+// repositoryUpdate merges upstream into the checkout in one step, for a client
+// that does not want the resolution screen. It is the same machinery: the
+// replay happens in the graft worktree, so a conflict changes nothing here —
+// it leaves the resolution open for the Repository screen to finish.
+//
+// Running and queued builds are unaffected either way: each one already built
+// its own snapshot of the working tree when it was submitted.
 func (a *App) repositoryUpdate(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 300*time.Second)
 	defer cancel()
-	// Held for the whole update so a submission cannot snapshot a half-merged tree.
+	// Held for the whole update so a submission cannot snapshot a half-merged
+	// tree. Lock order: mu then graftMu.
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if e := a.check(ctx); e != nil {
 		fail(w, 502, e.Error())
 		return
 	}
-	s, e := a.state(ctx)
+	code, e := func() (int, error) {
+		a.graftMu.Lock()
+		defer a.graftMu.Unlock()
+		a.repoMu.Lock()
+		up := a.upstream
+		a.repoMu.Unlock()
+		if up == nil {
+			return 502, errors.New("upstream has not been read yet")
+		}
+		if status, e := a.git(ctx, "status", "--porcelain"); e == nil && status != "" {
+			return 409, errors.New("the checkout has uncommitted changes; commit or discard them before updating")
+		}
+		head, e := a.git(ctx, "rev-parse", "HEAD")
+		if e != nil {
+			return 500, e
+		}
+		if _, e := a.git(ctx, "merge-base", "--is-ancestor", up.Revision, head); e == nil {
+			return 0, nil // already in
+		}
+		g := &Graft{Kind: "merge", Base: head, Branch: a.branch(ctx), Revision: up.Revision, Subject: up.Subject}
+		if e := a.openGraft(ctx, g); e != nil {
+			a.graft = nil
+			return 409, errors.New("update failed: " + e.Error())
+		}
+		if !g.Clean {
+			a.graft = g
+			paths := make([]string, 0, len(g.Files))
+			for _, c := range g.Files {
+				paths = append(paths, c.Path)
+			}
+			return 409, errors.New("conflicting changes in: " + strings.Join(paths, ", ") +
+				" — nothing was changed; resolve them on the Repository screen")
+		}
+		if e := a.applyMerge(ctx, g); e != nil {
+			a.graft = nil
+			a.discardWorktree(ctx)
+			return 409, errors.New("update failed: " + e.Error())
+		}
+		a.graft = nil
+		a.discardWorktree(ctx)
+		return 0, nil
+	}()
 	if e != nil {
-		fail(w, 500, e.Error())
+		fail(w, code, e.Error())
 		return
 	}
-	switch {
-	case s.Dirty:
-		fail(w, 409, "the checkout has uncommitted changes; commit or discard them before updating")
-		return
-	case s.Behind == 0:
-		respond(w, s)
-		return
-	}
-	if e := a.merge(ctx, s.Upstream.Revision, s.FastForward); e != nil {
-		fail(w, 409, "update failed: "+e.Error())
-		return
-	}
-	if s, e = a.state(ctx); e != nil {
-		fail(w, 500, e.Error())
-		return
-	}
-	respond(w, s)
+	a.respondRepository(w, ctx, "")
 }
