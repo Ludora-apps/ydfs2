@@ -270,7 +270,7 @@ func (a *App) presence(user string) []string {
 	return others
 }
 func (a *App) handler() http.Handler {
-	mux := http.NewServeMux()
+	mux := newCompatMux()
 	mux.HandleFunc("GET /api/capabilities", a.capabilities)
 	mux.HandleFunc("GET /api/repository", a.repository)
 	mux.HandleFunc("POST /api/repository/check", a.repositoryCheck)
@@ -314,7 +314,7 @@ func (a *App) handler() http.Handler {
 	})
 	mux.HandleFunc("POST /api/jobs", a.submit)
 	mux.HandleFunc("GET /api/jobs/{id}", func(w http.ResponseWriter, r *http.Request) {
-		j, e := a.job(r.PathValue("id"))
+		j, e := a.job(pathValue(r, "id"))
 		if e != nil {
 			fail(w, 404, "build not found")
 			return
@@ -340,7 +340,7 @@ func (a *App) handler() http.Handler {
 	mux.HandleFunc("GET /api/profiles", a.profiles)
 	mux.HandleFunc("PUT /api/profiles", a.putProfile)
 	mux.HandleFunc("DELETE /api/profiles/{name}", func(w http.ResponseWriter, r *http.Request) {
-		_, e := a.db.Exec("DELETE FROM profiles WHERE name=?", r.PathValue("name"))
+		_, e := a.db.Exec("DELETE FROM profiles WHERE name=?", pathValue(r, "name"))
 		if e != nil {
 			fail(w, 500, e.Error())
 			return

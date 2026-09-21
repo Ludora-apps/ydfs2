@@ -68,7 +68,7 @@ func TestWorkspacePathRejectsEscapes(t *testing.T) {
 }
 
 // A symlink pointing out of the checkout is the same attack wearing a hat:
-// os.OpenRoot refuses to follow it, which is why every read goes through it.
+// openRoot refuses to follow it, which is why every read goes through it.
 func TestWorkspaceReadRefusesSymlinkEscape(t *testing.T) {
 	a := aiWorkspace(t)
 	secret := filepath.Join(t.TempDir(), "secret.conf")

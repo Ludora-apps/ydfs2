@@ -125,7 +125,7 @@ func (a *App) logs(w http.ResponseWriter, r *http.Request) {
 func (a *App) deleteLog(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	j, e := a.job(r.PathValue("id"))
+	j, e := a.job(pathValue(r, "id"))
 	if e != nil {
 		fail(w, 404, "build not found")
 		return

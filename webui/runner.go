@@ -19,21 +19,10 @@ import (
 	"time"
 )
 
-func (a *App) command(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, a.docker, args...)
+func (a *App) command(ctx context.Context, args ...string) *groupCommand {
+	cmd := exec.Command(a.docker, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return os.ErrProcessDone
-		}
-		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		if errors.Is(err, syscall.ESRCH) {
-			return os.ErrProcessDone
-		}
-		return err
-	}
-	cmd.WaitDelay = 3 * time.Second
-	return cmd
+	return &groupCommand{Cmd: cmd, ctx: ctx}
 }
 func (a *App) freeBytes() (uint64, error) {
 	var s syscall.Statfs_t
@@ -112,7 +101,7 @@ func (a *App) packageLists(w http.ResponseWriter, r *http.Request) {
 	respond(w, map[string][]string{"lists": names})
 }
 func (a *App) packageListContent(w http.ResponseWriter, r *http.Request) {
-	path, e := a.packageListPath(r.PathValue("name"))
+	path, e := a.packageListPath(pathValue(r, "name"))
 	if e != nil {
 		fail(w, 404, e.Error())
 		return
@@ -122,7 +111,7 @@ func (a *App) packageListContent(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, e.Error())
 		return
 	}
-	respond(w, map[string]string{"name": r.PathValue("name"), "content": string(b)})
+	respond(w, map[string]string{"name": pathValue(r, "name"), "content": string(b)})
 }
 func (a *App) submit(w http.ResponseWriter, r *http.Request) {
 	var s Settings
@@ -303,7 +292,7 @@ func snapshot(src, dst string) error {
 func (a *App) cancel(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	j, e := a.job(r.PathValue("id"))
+	j, e := a.job(pathValue(r, "id"))
 	if e != nil {
 		fail(w, 404, "build not found")
 		return
@@ -331,7 +320,7 @@ func (a *App) cancel(w http.ResponseWriter, r *http.Request) {
 func (a *App) deleteJob(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	j, e := a.job(r.PathValue("id"))
+	j, e := a.job(pathValue(r, "id"))
 	if e != nil {
 		fail(w, 404, "build not found")
 		return
@@ -773,7 +762,7 @@ func (a *App) collect(j *Job) error {
 	return nil
 }
 func (a *App) events(w http.ResponseWriter, r *http.Request) {
-	j, e := a.job(r.PathValue("id"))
+	j, e := a.job(pathValue(r, "id"))
 	if e != nil {
 		fail(w, 404, "build not found")
 		return
@@ -857,7 +846,7 @@ func (a *App) events(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func (a *App) downloadLog(w http.ResponseWriter, r *http.Request) {
-	j, e := a.job(r.PathValue("id"))
+	j, e := a.job(pathValue(r, "id"))
 	if e != nil {
 		fail(w, 404, "build not found")
 		return
@@ -867,12 +856,12 @@ func (a *App) downloadLog(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, a.logPath(j.ID))
 }
 func (a *App) downloadArtifact(w http.ResponseWriter, r *http.Request) {
-	j, e := a.job(r.PathValue("id"))
+	j, e := a.job(pathValue(r, "id"))
 	if e != nil {
 		fail(w, 404, "build not found")
 		return
 	}
-	name := r.PathValue("name")
+	name := pathValue(r, "name")
 	found := false
 	for _, v := range j.Artifacts {
 		if name == v.Name {
@@ -883,7 +872,7 @@ func (a *App) downloadArtifact(w http.ResponseWriter, r *http.Request) {
 		fail(w, 404, "artifact not found")
 		return
 	}
-	root, e := os.OpenRoot(filepath.Join(a.dir(j), "output"))
+	root, e := openRoot(filepath.Join(a.dir(j), "output"))
 	if e != nil {
 		fail(w, 404, "artifact unavailable")
 		return

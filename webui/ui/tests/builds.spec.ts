@@ -708,7 +708,7 @@ test("a conflicting merge is resolved before it can be applied", async ({
       contentType: "application/json",
       body: JSON.stringify(v),
     });
-  await page.route("**/api/repository**", async (route) => {
+  await page.route(/\/api\/repository(?:[/?]|$)/, async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/repository/merge/preview")
       return json(route, state(graft("")));
@@ -799,7 +799,7 @@ test("a listed commit can be proposed upstream two ways", async ({ page }) => {
     ],
   };
   let sent: { revision: string; mode: string } | null = null;
-  await page.route("**/api/repository**", async (route) => {
+  await page.route(/\/api\/repository(?:[/?]|$)/, async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/repository/pr")
       sent = route.request().postDataJSON() as typeof sent;
@@ -927,7 +927,7 @@ test("uncommitted files are listed, diffed, staged and committed", async ({
     },
     sources: [],
   });
-  await page.route("**/api/repository**", async (route) => {
+  await page.route(/\/api\/repository(?:[/?]|$)/, async (route) => {
     const req = route.request();
     const url = new URL(req.url());
     const json = (v: unknown) =>

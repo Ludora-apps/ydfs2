@@ -102,7 +102,7 @@ func availableMemory() uint64 {
 
 // isoPath resolves a build's ISO the way downloadArtifact does: the name has to
 // be one this build actually recorded, and the file is opened through an
-// os.Root so a symlink cannot escape the job directory.
+// fileRoot so a symlink cannot escape the job directory.
 func (a *App) isoPath(j *Job) (string, error) {
 	name := ""
 	for _, v := range j.Artifacts {
@@ -114,7 +114,7 @@ func (a *App) isoPath(j *Job) (string, error) {
 	if name == "" {
 		return "", errors.New("this build has no ISO on disk")
 	}
-	root, e := os.OpenRoot(filepath.Join(a.dir(j), "output"))
+	root, e := openRoot(filepath.Join(a.dir(j), "output"))
 	if e != nil {
 		return "", errors.New("this build's ISO is unavailable")
 	}
@@ -142,7 +142,7 @@ func (a *App) vmHolds(id string) bool {
 }
 
 func (a *App) vmStart(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	id := pathValue(r, "id")
 	a.mu.Lock()
 	j, e := a.job(id)
 	if e != nil {
@@ -408,7 +408,7 @@ func (a *App) vmWatch(vm *VM) {
 }
 
 func (a *App) vmStop(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	id := pathValue(r, "id")
 	a.vmMu.Lock()
 	vm := a.vm
 	a.vmMu.Unlock()
@@ -511,13 +511,18 @@ func (a *App) vmConsole(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	proxy := &httputil.ReverseProxy{
-		Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.Out.URL.Scheme = "http"
-			pr.Out.URL.Host = endpoint
-			pr.Out.URL.Path = "/"
-			pr.Out.URL.RawQuery = ""
+		Director: func(out *http.Request) {
+			out.URL.Scheme = "http"
+			out.URL.Host = endpoint
+			out.URL.Path = "/"
+			out.URL.RawQuery = ""
+			out.URL.RawPath = ""
+			out.Header.Del("Forwarded")
+			out.Header.Del("X-Forwarded-Host")
+			out.Header.Del("X-Forwarded-Proto")
+			out.Header["X-Forwarded-For"] = nil
 			// QEMU rejects a websocket handshake that carries no Host header.
-			pr.Out.Host = endpoint
+			out.Host = endpoint
 			// QEMU matches these header names case-sensitively, while Go
 			// canonicalises them on the way in ("Sec-WebSocket-Key" becomes
 			// "Sec-Websocket-Key"). Handing QEMU the canonical spelling gets
@@ -525,9 +530,9 @@ func (a *App) vmConsole(w http.ResponseWriter, r *http.Request) {
 			// back by writing the map directly -- Header.Set would just
 			// canonicalise it again, and the Transport writes keys verbatim.
 			for _, k := range []string{"Sec-Websocket-Key", "Sec-Websocket-Version", "Sec-Websocket-Protocol", "Sec-Websocket-Extensions"} {
-				if v, ok := pr.Out.Header[k]; ok {
-					delete(pr.Out.Header, k)
-					pr.Out.Header[strings.Replace(k, "Websocket", "WebSocket", 1)] = v
+				if v, ok := out.Header[k]; ok {
+					delete(out.Header, k)
+					out.Header[strings.Replace(k, "Websocket", "WebSocket", 1)] = v
 				}
 			}
 		},

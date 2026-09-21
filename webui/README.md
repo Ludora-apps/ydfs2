@@ -4,7 +4,9 @@ Go serves an embedded React/TypeScript interface and runs the existing LinuxCons
 
 ## Build and run locally
 
-Requirements: Linux x86_64, Go 1.25 or newer, Node.js 22.12 or newer, npm, Git, Docker Engine, and Docker Compose. The account running the server needs Docker access. The checkout must contain `2.12/` and its Git metadata. A release tag is required for fast builds.
+Requirements: Linux x86_64, Go 1.19.8 or newer, Node.js 18.20.4 or newer, npm, Git, Docker Engine, and Docker Compose. The account running the server needs Docker access. The checkout must contain `2.12/` and its Git metadata. A release tag is required for fast builds.
+
+This compatibility branch targets Debian Bookworm with Go 1.19.8 and Node.js 18.20.4. It uses Vite 6, the React plugin 4, Playwright 1.55 and SQLite driver 1.28.0. Use npm 9 or 10 with Node.js 18. The HTTP router and Docker command cancellation also support Go 1.19. Confined file access uses Linux `openat2`, requiring kernel 5.6 or newer (Bookworm ships 6.1); it fails closed if that syscall is blocked.
 
 ```sh
 cd webui

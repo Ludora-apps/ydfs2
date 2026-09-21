@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"os"
@@ -59,7 +60,9 @@ func read(t *testing.T, p string) string {
 func gitOut(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	a := &App{}
-	out, e := a.gitAt(t.Context(), dir, args...)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	out, e := a.gitAt(ctx, dir, args...)
 	if e != nil {
 		t.Fatalf("git %v: %v", args, e)
 	}

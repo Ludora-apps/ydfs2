@@ -10,7 +10,7 @@ package main
 // Three boundaries do the security work:
 //
 //   - The workspace is the checkout and nothing else. Every path is
-//     repository-relative and is opened through os.OpenRoot, the same guard
+//     repository-relative and is opened through openRoot, the same guard
 //     downloadArtifact and the VM console use, so neither "../../etc/passwd"
 //     nor a symlink pointing out of the tree can resolve.
 //   - A path is only ever acted on if git itself just listed it — the rule
@@ -91,7 +91,7 @@ func looksTextual(p string) bool {
 
 // workspacePath turns a client- or model-supplied string into a path that is
 // safe to join, or rejects it. It refuses absolute paths, traversal, and
-// anything that does not stay inside the workspace once cleaned; os.OpenRoot
+// anything that does not stay inside the workspace once cleaned; openRoot
 // enforces the same thing again at open time, symlinks included.
 func workspacePath(p string) (string, error) {
 	p = strings.TrimSpace(strings.ReplaceAll(p, "\\", "/"))
@@ -158,7 +158,7 @@ func (a *App) readWorkspaceFile(rel string) (string, error) {
 	if e != nil {
 		return "", e
 	}
-	root, e := os.OpenRoot(a.repo)
+	root, e := openRoot(a.repo)
 	if e != nil {
 		return "", errors.New("the workspace is unavailable")
 	}
@@ -185,7 +185,7 @@ func (a *App) readWorkspaceFile(rel string) (string, error) {
 }
 
 func (a *App) fileExists(rel string) (bool, os.FileInfo) {
-	root, e := os.OpenRoot(a.repo)
+	root, e := openRoot(a.repo)
 	if e != nil {
 		return false, nil
 	}
@@ -771,7 +771,7 @@ func (a *App) aiApplyPatch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	root, e := os.OpenRoot(a.repo)
+	root, e := openRoot(a.repo)
 	if e != nil {
 		fail(w, 500, "the workspace is unavailable")
 		return
@@ -812,7 +812,7 @@ func (a *App) aiApplyPatch(w http.ResponseWriter, r *http.Request) {
 // writeThroughRoot creates the parent directories a new file needs and writes
 // it, never leaving the root. Directories are created one component at a time
 // through the same guard, so no component can be a symlink out of the tree.
-func writeThroughRoot(root *os.Root, rel, content string) error {
+func writeThroughRoot(root *fileRoot, rel, content string) error {
 	dir := path.Dir(rel)
 	if dir != "." {
 		parts := strings.Split(dir, "/")
@@ -902,7 +902,7 @@ func (a *App) aiRejectPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	if p.Applied {
 		a.mu.Lock()
-		root, e := os.OpenRoot(a.repo)
+		root, e := openRoot(a.repo)
 		if e != nil {
 			a.mu.Unlock()
 			fail(w, 500, "the workspace is unavailable")

@@ -227,9 +227,9 @@ func (a *App) openGraft(ctx context.Context, g *Graft) error {
 
 // writeInto writes one resolved file inside the worktree. The path comes from
 // git's own conflict list, never from the browser, but it is still resolved
-// through os.OpenRoot so no path can reach outside the worktree.
+// through openRoot so no path can reach outside the worktree.
 func writeInto(dir, path string, data []byte) error {
-	root, e := os.OpenRoot(dir)
+	root, e := openRoot(dir)
 	if e != nil {
 		return e
 	}
@@ -544,7 +544,7 @@ func (a *App) graftFile(w http.ResponseWriter, r *http.Request) {
 	w.Write(out)
 }
 func readInside(dir, path string) ([]byte, error) {
-	root, e := os.OpenRoot(dir)
+	root, e := openRoot(dir)
 	if e != nil {
 		return nil, e
 	}

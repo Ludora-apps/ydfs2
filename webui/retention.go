@@ -87,7 +87,7 @@ func (a *App) pruneArtifacts(j *Job) error {
 func (a *App) setFavorite(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	j, e := a.job(r.PathValue("id"))
+	j, e := a.job(pathValue(r, "id"))
 	if e != nil {
 		fail(w, 404, "build not found")
 		return
@@ -119,7 +119,7 @@ func (a *App) setFavorite(w http.ResponseWriter, r *http.Request) {
 // downloadConfig serves the config.ini the build actually ran with, archived
 // into the job's output directory by the container script in launch().
 func (a *App) downloadConfig(w http.ResponseWriter, r *http.Request) {
-	j, e := a.job(r.PathValue("id"))
+	j, e := a.job(pathValue(r, "id"))
 	if e != nil {
 		fail(w, 404, "build not found")
 		return
