@@ -4,7 +4,7 @@ Go serves an embedded React/TypeScript interface and runs the existing LinuxCons
 
 ## Build and run locally
 
-Requirements: Linux x86_64, Go 1.25 or newer, Node.js 22.12 or newer, npm, Git, Docker Engine, and Docker Compose. The account running the server needs Docker access. The checkout must contain `2.12/` and its Git metadata. A release tag is required for fast builds.
+Requirements: Linux x86_64, Go 1.25 or newer, Node.js 20.19+ (or 22.12+), npm, Git, Docker Engine, and Docker Compose. The account running the server needs Docker access. The checkout must contain `2.12/` and its Git metadata. A release tag is required for fast builds.
 
 ```sh
 cd webui
@@ -17,6 +17,10 @@ Open http://127.0.0.1:8080. `--dev` disables authentication and only permits a l
 The workspace is a left-hand menu of eight screens — Repository, Kept builds, New build, Launch, Flatpak, Logs, Saved profiles, Build activity — and one of them at a time in the content area. The screen being shown is in the URL (`#/logs`), so a reload or a shared link reopens it. "New build" carries the build form beside the job list and the details of the selected build; "Build activity" shows that same list and details on their own.
 
 The compiled executable embeds the UI; Node.js is not needed at runtime. Default storage is `~/.local/share/ydfs-web`, outside the checkout. Override it with `--data /path/to/storage`. Keep at least 10 GiB free (configurable with `--min-free-gb`); real distro builds may need substantially more. The dashboard reports available disk space. The manager checks the threshold before admission and before starting queued work.
+
+## Docker deployment
+
+See [Docker deployment instructions](deploy/DOCKER.md) for a portable Linux server installation using Node 20.20.2 and Go 1.27.1, matching this development host.
 
 ## Build behavior
 

@@ -1,0 +1,66 @@
+name: ydfs-web
+services:
+  web:
+    build: .
+    image: ydfs-web:local
+    restart: unless-stopped
+    init: true
+    # Preserve loopback-only authentication and reach host VM websocket ports.
+    network_mode: host
+    environment:
+      YDFS_REPO: ${YDFS_REPO:?Absolute checkout path required}
+      YDFS_DATA: ${YDFS_DATA:?Absolute data path required}
+      YDFS_PROXY_SECRET: ${YDFS_PROXY_SECRET:?Proxy secret required}
+      YDFS_ALLOWED_USERS: ${YDFS_ALLOWED_USERS:?GitHub users required}
+      YDFS_AI_API_KEY: ${YDFS_AI_API_KEY:-}
+    command: ["--origin", "https://${YDFS_DOMAIN:?Domain required}:8088"]
+    volumes:
+      # The host Docker daemon must resolve the same paths as the manager.
+      - type: bind
+        source: ${YDFS_REPO}
+        target: ${YDFS_REPO}
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${YDFS_DATA}
+        target: ${YDFS_DATA}
+        bind:
+          create_host_path: false
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  oauth:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.9.0
+    profiles: ["public"]
+    restart: unless-stopped
+    network_mode: host
+    command: ["--config=/etc/oauth2-proxy.cfg"]
+    volumes:
+      - ./deploy/oauth2-proxy.cfg:/etc/oauth2-proxy.cfg:ro
+    environment:
+      OAUTH2_PROXY_CLIENT_ID: ${OAUTH2_PROXY_CLIENT_ID:-}
+      OAUTH2_PROXY_CLIENT_SECRET: ${OAUTH2_PROXY_CLIENT_SECRET:-}
+      OAUTH2_PROXY_COOKIE_SECRET: ${OAUTH2_PROXY_COOKIE_SECRET:-}
+      OAUTH2_PROXY_GITHUB_USERS: ${YDFS_ALLOWED_USERS}
+      OAUTH2_PROXY_REDIRECT_URL: https://${YDFS_DOMAIN}:8088/oauth2/callback
+      OAUTH2_PROXY_WHITELIST_DOMAINS: ${YDFS_DOMAIN}:8088
+
+  caddy:
+    image: caddy:2.10.2
+    profiles: ["public"]
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      YDFS_DOMAIN: ${YDFS_DOMAIN}
+      YDFS_PROXY_SECRET: ${YDFS_PROXY_SECRET}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+volumes:
+  caddy-data:
+  caddy-config:

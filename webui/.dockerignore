@@ -1,0 +1,9 @@
+ui/node_modules
+internal/assets/dist
+ydfs-web
+*.env
+.env*
+!*.env.example
+!.env.example
+ui/test-results
+ui/playwright-report
