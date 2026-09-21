@@ -313,12 +313,6 @@ type PageId =
   | "activity";
 const menu: { id: PageId; label: string; icon: string; hint: string }[] = [
   { id: "repo", label: "Repository", icon: "◆", hint: "checkout and upstream" },
-  {
-    id: "aicode",
-    label: "AI Code Assistant",
-    icon: "✦",
-    hint: "ask, review, build",
-  },
   { id: "build", label: "New build", icon: "＋", hint: "configure and queue" },
   {
     id: "launch",
@@ -350,6 +344,12 @@ const menu: { id: PageId; label: string; icon: string; hint: string }[] = [
     label: "Build activity",
     icon: "◷",
     hint: "queue and history",
+  },
+  {
+    id: "aicode",
+    label: "AI Code Assistant",
+    icon: "✦",
+    hint: "ask, review, build",
   },
 ];
 const pageFromHash = (): PageId => {
