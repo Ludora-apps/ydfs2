@@ -5,8 +5,53 @@ https://{$YDFS_DOMAIN}:8088 {
         request_header -X-Forwarded-User
         request_header -X-Auth-Request-User
         request_header -X-Build-Proxy-Secret
+
+        # The one page that renders without a session: where signing out lands,
+        # and where a login that failed twice lands instead of an error page.
+        handle /signed-out {
+            header Cache-Control "no-store"
+            header Content-Type "text/html; charset=utf-8"
+            respond `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>LinuxConsole builds</title><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;min-height:100vh;display:grid;place-items:center;font:16px/1.6 system-ui,sans-serif;color-scheme:light dark"><main style="text-align:center;padding:2rem"><h1 style="font-size:1.5rem;margin:0 0 .5rem">Not signed in</h1><p style="opacity:.7;margin:0">Your session has ended, or the last sign-in did not complete.</p><p style="margin:1.75rem 0 0"><a href="/oauth2/start?rd=%2F" style="display:inline-block;padding:.7rem 1.5rem;border-radius:.4rem;background:#2f6feb;color:#fff;font-weight:600;text-decoration:none">Sign in with GitHub</a></p></main></body></html>` 200
+        }
+
+        # A CSRF cookie cleared by a login that finished first, or an
+        # authorization code replayed by a reload or the back button, leaves
+        # oauth2-proxy's error page — a dead end the operator can only escape by
+        # clearing cookies. Start the login again instead. The marker cookie
+        # makes that exactly one retry, so a broken login can never loop.
+        handle /oauth2/callback {
+            reverse_proxy 127.0.0.1:4180 {
+                header_up X-Auth-Request-Redirect https://{$YDFS_DOMAIN}:8088/
+                @broken status 403 500
+                handle_response @broken {
+                    @retried header Cookie *ydfs_login_retry=1*
+                    handle @retried {
+                        redir https://{$YDFS_DOMAIN}:8088/signed-out 302
+                    }
+                    handle {
+                        header Set-Cookie "ydfs_login_retry=1; Path=/; Max-Age=120; Secure; HttpOnly; SameSite=Lax"
+                        header Cache-Control "no-store"
+                        redir https://{$YDFS_DOMAIN}:8088/oauth2/start?rd=%2F 302
+                    }
+                }
+            }
+        }
+        # Signing out has to land somewhere that does not need a session, or the
+        # redirect immediately signs the operator back in.
+        handle /oauth2/sign_out {
+            reverse_proxy 127.0.0.1:4180 {
+                header_up X-Auth-Request-Redirect https://{$YDFS_DOMAIN}:8088/signed-out
+            }
+        }
+        # X-Auth-Request-Redirect is where oauth2-proxy sends the browser once a
+        # login succeeds, and it must always name the application, never the
+        # request's own URI: a login started from an /oauth2/ page — the Sign In
+        # button on oauth2-proxy's own error page — would otherwise land back on
+        # /oauth2/callback with no state, which answers 500 every time.
         handle /oauth2/* {
-            reverse_proxy 127.0.0.1:4180
+            reverse_proxy 127.0.0.1:4180 {
+                header_up X-Auth-Request-Redirect https://{$YDFS_DOMAIN}:8088/
+            }
         }
         handle {
             forward_auth 127.0.0.1:4180 {
@@ -14,7 +59,23 @@ https://{$YDFS_DOMAIN}:8088 {
                 copy_headers X-Auth-Request-User>X-Forwarded-User
                 @login status 401
                 handle_response @login {
-                    redir /oauth2/start?rd=https://{$YDFS_DOMAIN}:8088/ 302
+                    # An open page polls the API every five seconds; when the
+                    # session expires, answering those polls with a redirect to
+                    # /oauth2/start would begin a fresh login on every tick, and
+                    # the first callback to complete clears the CSRF cookie out
+                    # from under all the others — that is the 403 on
+                    # /oauth2/callback. Only a real page navigation logs in; a
+                    # background request gets a plain 401 that the page turns
+                    # into a Sign in button.
+                    @background header Sec-Fetch-Mode cors no-cors same-origin websocket
+                    handle @background {
+                        header Cache-Control "no-store"
+                        header Content-Type "application/json"
+                        respond `{"error":"Your session has ended. Sign in again to continue."}` 401
+                    }
+                    handle {
+                        redir https://{$YDFS_DOMAIN}:8088/oauth2/start?rd=%2F 302
+                    }
                 }
             }
             reverse_proxy 127.0.0.1:8080 {

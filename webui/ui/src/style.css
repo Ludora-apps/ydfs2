@@ -662,6 +662,27 @@ dd {
   background: none;
   color: inherit;
 }
+/* The session ended: a warning with one thing to do about it, not an error to
+   dismiss. */
+.alert.expired {
+  background: var(--warn);
+  color: var(--warn-text);
+  align-items: center;
+  gap: 18px;
+}
+button.signin {
+  border: 0;
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-weight: 600;
+  font-size: 12px;
+  white-space: nowrap;
+  background: #198267;
+  color: #fff;
+}
+button.signin:hover {
+  background: #126b55;
+}
 .notice {
   background: var(--success);
   color: var(--success-text);

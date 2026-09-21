@@ -1037,3 +1037,57 @@ test("open pull requests from the fork are listed and refreshable", async ({
   await box.getByRole("button", { name: "↻ Refresh" }).click();
   await asked;
 });
+
+// A session that ends while the page is open — a tab left overnight, a browser
+// reopened days later. It says so once, in one place, and the only way back in
+// is a navigation of the whole tab: a page that chased the login in the
+// background would leave several in flight at once, and the first callback to
+// complete clears the CSRF cookie out from under the rest (a 403 on a sign-in
+// that was working).
+test("an expired session asks for one sign-in and stops polling", async ({
+  page,
+}) => {
+  await fixture(page);
+  await expect(page.locator(".header-queue")).toContainText("0 running");
+  let logins = 0;
+  await page.route("**/oauth2/**", (route) => {
+    logins++;
+    return route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      body: "<h1>GitHub</h1>",
+    });
+  });
+  // Registered after the fixture, so it answers first: the session is gone.
+  await page.route("**/api/**", (route) =>
+    route.fulfill({
+      status: 401,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: "Your session has ended. Sign in again to continue.",
+      }),
+    }),
+  );
+  const banner = page.locator(".alert.expired");
+  await expect(banner).toContainText("Your session has ended", {
+    timeout: 15000,
+  });
+  // One statement of it: the ordinary error bar is not stacked on top.
+  await expect(page.locator(".alert:not(.expired):not(.presence)")).toHaveCount(
+    0,
+  );
+  await expect(page.locator(".identity")).toContainText("Signed out");
+  // Nothing went looking for a login on its own.
+  expect(logins).toBe(0);
+  // Polling has stopped: the page would otherwise ask again every 5s.
+  let asked = 0;
+  page.on("request", (r) => {
+    if (r.url().includes("/api/")) asked++;
+  });
+  await page.waitForTimeout(7000);
+  expect(asked).toBe(0);
+  // Signing in navigates the tab, carrying the screen it was on.
+  await banner.getByRole("button", { name: "Sign in with GitHub" }).click();
+  await expect(page).toHaveURL(/\/oauth2\/start\?rd=%2F/);
+  expect(logins).toBe(1);
+});

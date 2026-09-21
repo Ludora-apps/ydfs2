@@ -408,9 +408,13 @@ function TextViewer({
     setLoadError("");
     let live = true;
     fetch(url, { headers: { "X-Requested-With": "ydfs-web" } })
-      .then((r) =>
-        r.ok ? r.text() : Promise.reject(new Error("Not available")),
-      )
+      .then((r) => {
+        if (r.status === 401) {
+          sessionEnded();
+          return Promise.reject(new Error("Your session has ended."));
+        }
+        return r.ok ? r.text() : Promise.reject(new Error("Not available"));
+      })
       .then((t) => live && setText(t))
       .catch((e) => live && setLoadError((e as Error).message));
     return () => {
@@ -654,6 +658,24 @@ function ConfirmDialog({
     </dialog>
   );
 }
+// The session behind this page has ended.
+//
+// The reverse proxy answers a *background* request with 401 rather than
+// redirecting it into a GitHub login: this page polls every few seconds, and a
+// login started on every tick would leave several in flight at once, where the
+// first callback to complete clears the CSRF cookie out from under the rest —
+// a 403 on a sign-in that was working. So the page is told plainly, stops
+// polling, and offers one Sign in button that navigates the whole tab.
+//
+// Set by App, so every request — including the plain fetch behind TextViewer —
+// reaches the same banner without each call site knowing about it.
+let sessionEnded: () => void = () => {};
+// Signing in has to be a navigation of the whole tab, never a fetch, and it
+// carries the screen being looked at so the login lands back on it.
+function signIn() {
+  const here = location.pathname + location.search + location.hash;
+  location.assign(`/oauth2/start?rd=${encodeURIComponent(here)}`);
+}
 async function api<T>(
   path: string,
   method = "GET",
@@ -671,6 +693,7 @@ async function api<T>(
     const err = await res
       .json()
       .catch(() => ({ error: `Request failed (${res.status})` }));
+    if (res.status === 401) sessionEnded();
     throw new Error(err.error);
   }
   return res.json();
@@ -1211,6 +1234,15 @@ function App() {
   const [selected, setSelected] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  // Everything on this page is now a view of a session that has ended: stop
+  // polling, stop the log stream, and ask for one sign-in (see sessionEnded).
+  const [expired, setExpired] = useState(false);
+  useEffect(() => {
+    sessionEnded = () => setExpired(true);
+    return () => {
+      sessionEnded = () => {};
+    };
+  }, []);
   const [notice, setNotice] = useState("");
   useEffect(() => {
     if (!notice) return;
@@ -1338,6 +1370,7 @@ function App() {
     setSelected((old) => old || j[0]?.id || "");
   }
   useEffect(() => {
+    if (expired) return;
     let mounted = true;
     const load = () =>
       refresh().catch((e) => {
@@ -1349,7 +1382,7 @@ function App() {
       mounted = false;
       clearInterval(t);
     };
-  }, []);
+  }, [expired]);
   useEffect(() => {
     let mounted = true;
     // The local commit is cheap; the upstream check reaches GitHub, so it
@@ -1367,7 +1400,7 @@ function App() {
   // the checkout — a local read, no network call — and skips the tick whenever
   // an action of its own is in flight or the tab is in the background.
   useEffect(() => {
-    if (page !== "repo") return;
+    if (page !== "repo" || expired) return;
     const tick = () => {
       if (document.visibilityState === "visible" && !repoBusyRef.current)
         loadRepo(false);
@@ -1379,20 +1412,26 @@ function App() {
       clearInterval(t);
       document.removeEventListener("visibilitychange", tick);
     };
-  }, [page]);
+  }, [page, expired]);
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState === "visible") {
+      if (document.visibilityState === "visible" && !expired) {
         refresh().catch((e) => setError(e.message));
       }
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
-  }, []);
+  }, [expired]);
   useEffect(() => {
     setLog("");
     setSearch("");
     if (!selected) return;
+    // EventSource cannot report a 401 — it would simply reconnect for ever
+    // against a session that has ended.
+    if (expired) {
+      setStreamState("Signed out");
+      return;
+    }
     setStreamState("Connecting");
     const stream = new EventSource(`/api/jobs/${selected}/events`);
     stream.onopen = () => setStreamState("Live");
@@ -1408,7 +1447,7 @@ function App() {
       refresh().catch((e) => setError(e.message));
     });
     return () => stream.close();
-  }, [selected]);
+  }, [selected, expired]);
   useEffect(() => {
     // A direct jump, not scrollIntoView: turning Follow on while scrolled far
     // up must land at the bottom instantly, not via a long animated scroll.
@@ -2955,11 +2994,21 @@ function App() {
           </div>
           <div className="identity">
             <span className="status-dot" />
-            {caps?.development
-              ? "Local development"
-              : caps?.user || "Connecting"}
-            {caps && !caps.development && (
-              <a href="/oauth2/sign_out">Sign out</a>
+            {expired
+              ? "Signed out"
+              : caps?.development
+                ? "Local development"
+                : caps?.user || "Connecting"}
+            {caps && !caps.development && !expired && (
+              /* Sign-out lands on the one page that needs no session, or the
+                 redirect back into the app would sign the operator straight
+                 back in. */
+              <a href="/oauth2/sign_out?rd=%2Fsigned-out">Sign out</a>
+            )}
+            {expired && (
+              <button type="button" className="signin" onClick={signIn}>
+                Sign in
+              </button>
             )}
           </div>
         </div>
@@ -2998,7 +3047,21 @@ function App() {
               </span>
             </div>
           )}
-          {error && (
+          {/* The session ended while the page was open. It says so once, in
+              one place, instead of every poll failing on its own. */}
+          {expired && (
+            <div className="alert expired" role="alert">
+              <span>
+                <strong>Your session has ended.</strong> Nothing on this screen
+                is being updated any more. Builds already queued or running are
+                unaffected — they keep going on the server.
+              </span>
+              <button type="button" className="signin" onClick={signIn}>
+                Sign in with GitHub
+              </button>
+            </div>
+          )}
+          {error && !expired && (
             <div className="alert" role="alert">
               {error}
               <button onClick={() => setError("")} aria-label="Dismiss error">

@@ -8,6 +8,20 @@ map $http_upgrade $ydfs_connection_upgrade {
     default upgrade;
     ''      '';
 }
+
+# Which requests may start a GitHub login, and which are only told they are not
+# signed in. An open page polls the API every five seconds; when the session
+# expires, answering those polls with a redirect to /oauth2/start would begin a
+# fresh login on every tick, and the first callback to complete clears the CSRF
+# cookie out from under all the others — that is the 403 on /oauth2/callback.
+# Only a real page navigation logs in; a background request gets a plain 401
+# that the page turns into a Sign in button.
+map $http_sec_fetch_mode $ydfs_background {
+    default  1;
+    ''       0;   # a client too old to send the header: treat it as a page
+    navigate 0;
+}
+
 server {
     listen 0.0.0.0:8088 ssl;
     server_name linuxconsole.ludora.studio;
@@ -16,13 +30,60 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
     client_max_body_size 16k;
 
+    # oauth2-proxy itself. X-Auth-Request-Redirect is where it sends the browser
+    # once a login succeeds, and it must always name the application, never
+    # $request_uri: a login started from an /oauth2/ page — the Sign In button on
+    # oauth2-proxy's own error page — would otherwise land back on
+    # /oauth2/callback with no state, which answers 500 every time.
     location /oauth2/ {
         proxy_pass http://127.0.0.1:4180;
         proxy_set_header Host $http_host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-Auth-Request-Redirect https://linuxconsole.ludora.studio:8088$request_uri;
+        proxy_set_header X-Auth-Request-Redirect https://linuxconsole.ludora.studio:8088/;
     }
+
+    # Signing out has to land somewhere that does not need a session, or the
+    # redirect immediately signs the operator back in.
+    location = /oauth2/sign_out {
+        proxy_pass http://127.0.0.1:4180;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Auth-Request-Redirect https://linuxconsole.ludora.studio:8088/signed-out;
+    }
+
+    # A CSRF cookie cleared by a login that finished first, or an authorization
+    # code replayed by a reload or the back button, leaves oauth2-proxy's error
+    # page — a dead end the operator can only escape by clearing cookies. Start
+    # the login again instead. The marker cookie makes that exactly one retry,
+    # so a genuinely broken login can never loop.
+    location = /oauth2/callback {
+        proxy_pass http://127.0.0.1:4180;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Auth-Request-Redirect https://linuxconsole.ludora.studio:8088/;
+        proxy_intercept_errors on;
+        error_page 403 500 = @login_retry;
+    }
+    location @login_retry {
+        if ($cookie_ydfs_login_retry) {
+            return 302 https://linuxconsole.ludora.studio:8088/signed-out;
+        }
+        add_header Set-Cookie "ydfs_login_retry=1; Path=/; Max-Age=120; Secure; HttpOnly; SameSite=Lax" always;
+        add_header Cache-Control "no-store" always;
+        return 302 https://linuxconsole.ludora.studio:8088/oauth2/start?rd=%2F;
+    }
+
+    # The one page that renders without a session: where signing out lands, and
+    # where a login that failed twice lands instead of an error page.
+    location = /signed-out {
+        default_type text/html;
+        add_header Cache-Control "no-store" always;
+        return 200 '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>LinuxConsole builds</title><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;min-height:100vh;display:grid;place-items:center;font:16px/1.6 system-ui,sans-serif;color-scheme:light dark"><main style="text-align:center;padding:2rem"><h1 style="font-size:1.5rem;margin:0 0 .5rem">Not signed in</h1><p style="opacity:.7;margin:0">Your session has ended, or the last sign-in did not complete.</p><p style="margin:1.75rem 0 0"><a href="/oauth2/start?rd=%2F" style="display:inline-block;padding:.7rem 1.5rem;border-radius:.4rem;background:#2f6feb;color:#fff;font-weight:600;text-decoration:none">Sign in with GitHub</a></p></main></body></html>';
+    }
+
     location = /oauth2/auth {
         internal;
         proxy_pass http://127.0.0.1:4180;
@@ -33,7 +94,14 @@ server {
         proxy_set_header X-Original-URL https://linuxconsole.ludora.studio:8088$request_uri;
     }
     location @github_login {
-        return 302 https://linuxconsole.ludora.studio:8088/oauth2/start?rd=https://linuxconsole.ludora.studio:8088/;
+        default_type application/json;
+        add_header Cache-Control "no-store" always;
+        # A background request never starts a login of its own; see the
+        # $ydfs_background map above.
+        if ($ydfs_background) {
+            return 401 '{"error":"Your session has ended. Sign in again to continue."}';
+        }
+        return 302 https://linuxconsole.ludora.studio:8088/oauth2/start?rd=%2F;
     }
     location / {
         auth_request /oauth2/auth;
