@@ -1091,3 +1091,307 @@ test("an expired session asks for one sign-in and stops polling", async ({
   await expect(page).toHaveURL(/\/oauth2\/start\?rd=%2F/);
   expect(logins).toBe(1);
 });
+
+// The AI Code Assistant, end to end against a stubbed provider: pick context,
+// send, review the diff, apply, build, fail, hand the errors back.
+//
+// The two rules being guarded are that nothing reaches the checkout without an
+// approval, and that the build is the existing pipeline rather than a second
+// one — the test asserts the page posts to /api/jobs like every other build.
+async function aiFixture(page: Page) {
+  let ready = false;
+  let patch: any = null;
+  let applied = false;
+  const messages: any[] = [];
+  const jobs: any[] = [];
+  const posted: string[] = [];
+  await page.route("**/api/**", async (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    const method = req.method();
+    const json = (v: unknown, status = 200) =>
+      route.fulfill({
+        status,
+        contentType: "application/json",
+        body: JSON.stringify(v),
+      });
+    if (method !== "GET") posted.push(`${method} ${path}`);
+    if (path === "/api/ai")
+      return json({
+        providers: [
+          {
+            ID: "anthropic",
+            Label: "Anthropic (Claude)",
+            DefaultBase: "https://api.anthropic.com",
+            NeedsKey: true,
+          },
+          {
+            ID: "ollama",
+            Label: "Ollama",
+            DefaultBase: "http://127.0.0.1:11434/v1",
+            NeedsKey: false,
+          },
+        ],
+        settings: {
+          provider: ready ? "anthropic" : "",
+          model: ready ? "claude-sonnet-5" : "",
+          baseUrl: "https://api.anthropic.com",
+          contextLimit: 200000,
+          inputPrice: 3,
+          cachedInputPrice: 0.3,
+          outputPrice: 15,
+          currency: "USD",
+          timeoutSeconds: 180,
+          maxTokens: 8000,
+        },
+        keyConfigured: ready,
+        keyFromEnv: false,
+        ready,
+        message: ready
+          ? ""
+          : "No AI provider is configured. Choose one in Provider settings before starting a session.",
+        session: {
+          id: "s1",
+          started: "2026-09-21T10:00:00Z",
+          messages,
+          totals: {
+            requests: messages.length ? 1 : 0,
+            toolCalls: 0,
+            inputTokens: messages.length ? 1200 : 0,
+            cachedInputTokens: messages.length ? 200 : 0,
+            outputTokens: messages.length ? 90 : 0,
+            reasoningTokens: 0,
+            cost: messages.length ? 0.0045 : null,
+            currency: "USD",
+            latencyMs: messages.length ? 1400 : 0,
+          },
+          build: jobs.length ? { jobId: jobs[0].id, target: "busybox" } : null,
+        },
+        generating: false,
+        patch,
+        build: jobs.length ? { jobId: jobs[0].id, target: "busybox" } : null,
+        quickActions: [
+          { ID: "bug", Label: "Fix a bug", Prompt: "There is a bug." },
+          {
+            ID: "errors",
+            Label: "Fix compilation errors",
+            Prompt: "The build failed.",
+          },
+        ],
+        targets: ["busybox", "kernel", "fast-iso"],
+      });
+    if (path === "/api/ai/config") {
+      ready = true;
+      return json({ ok: true });
+    }
+    if (path === "/api/ai/files")
+      return json({
+        files: ["2.12/tools/src/net.c", "2.12/scripts/make_net"],
+        more: 0,
+        total: 2,
+      });
+    if (path === "/api/ai/message") {
+      const usage = {
+        provider: "anthropic",
+        model: "claude-sonnet-5",
+        inputTokens: 1200,
+        cachedInputTokens: 200,
+        outputTokens: 90,
+        reasoningTokens: null,
+        contextTokens: 1100,
+        contextLimit: 200000,
+        estimated: false,
+        cost: 0.0045,
+        currency: "USD",
+        latencyMs: 1400,
+      };
+      messages.push(
+        { role: "user", content: "net_init crashes", at: "now" },
+        {
+          role: "assistant",
+          content:
+            "The initialiser returns before the socket is closed.\n\n```ydfs-patch path=2.12/tools/src/net.c\nint net_init(void){ return 1; }\n```\n",
+          at: "now",
+          usage,
+          patchId: "p1",
+        },
+      );
+      patch = {
+        id: "p1",
+        at: "now",
+        applied: false,
+        files: [
+          {
+            path: "2.12/tools/src/net.c",
+            diff: "--- a/2.12/tools/src/net.c\n+++ b/2.12/tools/src/net.c\n@@ -1 +1 @@\n-return 0;\n+return 1;\n",
+            added: 1,
+            removed: 1,
+            created: false,
+            bytes: 40,
+          },
+        ],
+      };
+      return route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        body:
+          'event: context\ndata: {"tokens":1100,"estimated":true,"note":""}\n\n' +
+          'event: text\ndata: "The initialiser returns before the socket is closed."\n\n' +
+          `event: usage\ndata: ${JSON.stringify(usage)}\n\n` +
+          'event: done\ndata: {"ok":true}\n\n',
+      });
+    }
+    if (path === "/api/ai/patch" && method === "GET") {
+      if (new URL(req.url()).searchParams.get("path"))
+        return route.fulfill({
+          contentType: "text/plain",
+          body: patch.files[0].diff,
+        });
+      return json(patch);
+    }
+    if (path === "/api/ai/patch/apply") {
+      applied = true;
+      patch = { ...patch, applied: true, appliedAt: "now" };
+      return json({ patch });
+    }
+    if (path === "/api/ai/patch/reject") {
+      patch = null;
+      return json({ ok: true });
+    }
+    if (path === "/api/jobs" && method === "POST") {
+      jobs.push({
+        id: "job-1",
+        state: "running",
+        settings: { target: "busybox" },
+      });
+      return json(jobs[0]);
+    }
+    if (path === "/api/ai/build") return json({ jobId: "job-1" });
+    if (path === "/api/jobs/job-1") return json(jobs[0]);
+    if (path.endsWith("/events")) {
+      jobs[0].state = "failed";
+      jobs[0].exitCode = 2;
+      return route.fulfill({
+        contentType: "text/event-stream",
+        body:
+          "id: 1\nevent: log\ndata: \"2.12/tools/src/net.c:2:9: error: implicit declaration of function 'socket'\\n\"\n\n" +
+          "event: done\ndata: " +
+          JSON.stringify(jobs[0]) +
+          "\n\n",
+      });
+    }
+    if (path === "/api/ai/errors")
+      return json({
+        jobId: "job-1",
+        target: "busybox",
+        exit: "2",
+        state: "failed",
+        text: "2.12/tools/src/net.c:2:9: error: implicit declaration of function 'socket'",
+        files: ["2.12/tools/src/net.c"],
+        count: 1,
+      });
+    if (path === "/api/ai/usage")
+      return json({ session: "s1", totals: {}, requests: [] });
+    return json({});
+  });
+  return { posted, isApplied: () => applied };
+}
+
+test("the assistant proposes, is reviewed, applied, built and corrected", async ({
+  page,
+}) => {
+  await fixture(page);
+  const ai = await aiFixture(page);
+  await open(page, "AI Code Assistant");
+
+  // Nothing is configured: the page says exactly what to do about it.
+  await expect(page.locator(".ai-chat")).toContainText(
+    "No AI provider is configured",
+  );
+  await expect(page.getByRole("button", { name: "Send" })).toBeDisabled();
+
+  // Configuring it opens the assistant.
+  await page.getByRole("button", { name: "Save provider settings" }).click();
+  await expect(page.locator(".ai-chat")).not.toContainText(
+    "No AI provider is configured",
+  );
+
+  // Pick the file the assistant may read, then ask.
+  await page.getByLabel("Search file names").fill("net.c");
+  await page
+    .locator(".ai-file", { hasText: "net.c" })
+    .getByRole("checkbox")
+    .check();
+  await expect(page.locator(".ai-chip")).toContainText("2.12/tools/src/net.c");
+  await page
+    .getByPlaceholder("Describe the bug")
+    .fill("net_init crashes sometimes. Find the bug and propose a fix.");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  // The reply streams in, and the patch block is not dumped into the chat.
+  await expect(page.locator(".ai-message.theirs")).toContainText(
+    "returns before the socket is closed",
+  );
+  await expect(page.locator(".ai-transcript")).not.toContainText("ydfs-patch");
+
+  // The proposal is a reviewable diff, and nothing has been applied.
+  const review = page.locator(".ai-patch");
+  await expect(review).toContainText("review before applying");
+  await expect(review).toContainText(
+    "Nothing has been written to the checkout",
+  );
+  await expect(review).toContainText("+1");
+  expect(ai.isApplied()).toBe(false);
+
+  // The diff opens in the same reader every other file uses.
+  await review.getByRole("button", { name: "2.12/tools/src/net.c" }).click();
+  const viewer = page.locator("dialog[open]");
+  await expect(viewer).toContainText("+return 1;");
+  await viewer.getByRole("button", { name: "Close" }).click();
+
+  // Applying it is a confirmation, never a silent write.
+  await review.getByRole("button", { name: "Apply changes" }).click();
+  const confirm = page.locator("dialog[open]");
+  await expect(confirm).toContainText("Apply 1 file to the checkout?");
+  await confirm.getByRole("button", { name: "Apply changes" }).click();
+  await expect(page.locator(".ai-patch")).toContainText(
+    "Applied to the working tree",
+  );
+
+  // Building goes through the existing queue, not a compiler of its own.
+  await page.getByRole("button", { name: "Run build" }).click();
+  await expect(page.locator(".ai-build")).toContainText("Failed");
+  expect(ai.posted).toContain("POST /api/jobs");
+
+  // And the compiler's own words can go back to the assistant.
+  await expect(page.locator(".ai-build-errors")).toContainText(
+    "2.12/tools/src/net.c",
+  );
+  await page.getByRole("button", { name: "Ask AI to fix errors" }).click();
+  await expect(page.locator(".ai-transcript")).toContainText(
+    "returns before the socket is closed",
+  );
+});
+
+// The usage panel reports what the provider said, and never dresses up a
+// figure this manager worked out itself as a measurement.
+test("AI usage separates reported counts from estimates", async ({ page }) => {
+  await fixture(page);
+  await aiFixture(page);
+  await open(page, "AI Code Assistant");
+  await page.getByRole("button", { name: "Save provider settings" }).click();
+  await page
+    .getByPlaceholder("Describe the bug")
+    .fill("why does net_init crash?");
+  await page.getByRole("button", { name: "Send" }).click();
+  const panel = page.locator(".ai-usage");
+  await expect(panel).toContainText("claude-sonnet-5");
+  await expect(panel).toContainText("1,200");
+  // Reasoning tokens were not reported: it says so rather than showing 0.
+  await expect(panel).toContainText("not reported");
+  // The context figure is this page's own, and is labelled as such.
+  await expect(panel.locator("dd", { hasText: "1,100" })).toContainText(
+    "estimated",
+  );
+  await expect(panel).toContainText("0.0045 USD");
+});

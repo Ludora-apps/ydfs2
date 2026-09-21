@@ -1947,3 +1947,387 @@ footer {
   align-items: center;
   gap: 8px;
 }
+
+/* The AI Code Assistant (aicode.tsx). Three columns on a desktop: what the
+   assistant may read, the conversation, and what the last request cost. */
+.ai-page {
+  display: grid;
+  grid-template-columns: 290px minmax(0, 1fr) 300px;
+  gap: 18px;
+  align-items: start;
+}
+.ai-context,
+.ai-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  position: sticky;
+  top: 12px;
+}
+.ai-context > section,
+.ai-usage > section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+}
+.ai-context h2,
+.ai-usage h2 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+.ai-context input[type="search"],
+.ai-settings input,
+.ai-settings select {
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--input);
+  color: var(--text);
+  font-size: 12px;
+}
+.ai-check {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+}
+.ai-filelist {
+  max-height: 320px;
+  overflow: auto;
+  border-top: 1px solid var(--subtle-border);
+  padding-top: 8px;
+}
+.ai-file {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 11px;
+  padding: 3px 0;
+  overflow-wrap: anywhere;
+}
+.ai-selected {
+  border-bottom: 1px solid var(--subtle-border);
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+}
+.ai-selected-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+.ai-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  background: var(--soft-accent);
+  color: var(--accent-text);
+  border-radius: 5px;
+  padding: 2px 4px;
+  margin: 0 4px 4px 0;
+  font-size: 10px;
+}
+.ai-chip button {
+  font-size: 10px;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+.ai-main {
+  min-width: 0;
+}
+.ai-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+.ai-head h1 {
+  margin: 0;
+}
+.ai-transcript {
+  max-height: 46vh;
+  overflow-y: auto;
+  border: 1px solid var(--subtle-border);
+  border-radius: 8px;
+  padding: 12px;
+  margin: 12px 0;
+  background: var(--input);
+}
+.ai-message {
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  border: 1px solid var(--subtle-border);
+}
+.ai-message.mine {
+  background: var(--soft-accent);
+  border-color: var(--selected-border);
+}
+.ai-message.theirs {
+  background: var(--surface);
+}
+.ai-message header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 0;
+  background: none;
+  color: inherit;
+  padding: 0 0 6px;
+  font-size: 11px;
+}
+.ai-message p {
+  margin: 0 0 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ai-tag {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: var(--neutral);
+  color: var(--neutral-text);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.ai-code,
+.ai-buildlog {
+  background: var(--terminal);
+  color: var(--terminal-text);
+  border-radius: 6px;
+  padding: 10px;
+  overflow-x: auto;
+  font-size: 11px;
+  position: relative;
+  margin: 0 0 8px;
+}
+.ai-buildlog {
+  max-height: 260px;
+  overflow-y: auto;
+}
+.ai-code-lang {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  font-size: 9px;
+  color: var(--muted);
+}
+.ai-context-sent {
+  font-size: 11px;
+  margin-bottom: 8px;
+}
+.ai-context-sent pre {
+  max-height: 200px;
+  overflow: auto;
+  background: var(--terminal);
+  color: var(--terminal-text);
+  border-radius: 6px;
+  padding: 8px;
+}
+/* The review gate: amber while it is a proposal, quiet once it has landed. */
+.ai-patch,
+.ai-build {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  margin-bottom: 12px;
+  background: var(--surface);
+}
+.ai-patch {
+  border-color: var(--warn-text);
+}
+.ai-patch.applied {
+  border-color: var(--border);
+}
+.ai-patch header,
+.ai-build header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  background: none;
+  color: inherit;
+  padding: 0 0 8px;
+  min-height: 0;
+}
+.ai-patch h2,
+.ai-build h2 {
+  font-size: 13px;
+  margin: 0;
+}
+.ai-patch-files {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  font-size: 12px;
+}
+.ai-patch-files li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 3px 0;
+}
+.ai-patch-open {
+  color: var(--link);
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+.ai-added {
+  color: var(--success-text);
+}
+.ai-removed {
+  color: var(--danger-text);
+}
+.ai-patch-actions,
+.ai-build-errors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.ai-patch-actions button,
+.ai-build header button,
+.ai-build-errors button {
+  width: auto;
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.ai-build-state {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.ai-state {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-radius: 4px;
+  padding: 2px 7px;
+  background: var(--neutral);
+  color: var(--neutral-text);
+}
+.ai-state.running,
+.ai-state.starting,
+.ai-state.queued {
+  background: var(--warn);
+  color: var(--warn-text);
+}
+.ai-state.succeeded {
+  background: var(--success);
+  color: var(--success-text);
+}
+.ai-state.failed {
+  background: var(--danger);
+  color: var(--danger-text);
+}
+.ai-composer textarea {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--input);
+  color: var(--text);
+  padding: 10px;
+  font-size: 12px;
+  font-family: inherit;
+  resize: vertical;
+}
+.ai-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.ai-actions button {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 11px;
+  background: var(--surface);
+}
+.ai-composer-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 11px;
+}
+.ai-composer-actions button {
+  width: auto;
+  border-radius: 6px;
+  padding: 9px 18px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.ai-usage dl {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 3px 10px;
+  margin: 0;
+  font-size: 11px;
+}
+.ai-usage dt {
+  color: var(--muted);
+}
+.ai-usage dd {
+  margin: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+/* Anything this manager worked out itself rather than being told. */
+.ai-usage em {
+  font-style: normal;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+.ai-settings label {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.ai-settings .ai-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 8px;
+}
+.ai-settings button[type="submit"] {
+  width: 100%;
+  border-radius: 6px;
+  padding: 9px;
+  font-size: 12px;
+}
+@media (max-width: 1500px) {
+  .ai-page {
+    grid-template-columns: 250px minmax(0, 1fr);
+  }
+  .ai-usage {
+    grid-column: 1 / -1;
+    position: static;
+  }
+  .ai-usage {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  }
+}
+@media (max-width: 1000px) {
+  .ai-page {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ai-context {
+    position: static;
+  }
+}

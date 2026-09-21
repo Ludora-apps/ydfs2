@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	_ "modernc.org/sqlite"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -168,10 +169,33 @@ func openDB(path string) (*sql.DB, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	_, err = db.Exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS profiles(name TEXT PRIMARY KEY, data TEXT NOT NULL);`)
+	// The database holds the AI provider credential (see ai.go), so it is not
+	// readable by anyone but the service account whatever the umask was when
+	// SQLite created these files. The data directory is already 0700; this is
+	// the file underneath it.
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		if _, e := os.Stat(p); e == nil {
+			os.Chmod(p, 0600)
+		}
+	}
+	_, err = db.Exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS profiles(name TEXT PRIMARY KEY, data TEXT NOT NULL);
+	CREATE TABLE IF NOT EXISTS app_settings(key TEXT PRIMARY KEY, data TEXT NOT NULL);
+	CREATE TABLE IF NOT EXISTS ai_sessions(id TEXT PRIMARY KEY, data TEXT NOT NULL);
+	-- One row per AI request. The dimensions a later report would group by are
+	-- columns rather than JSON, so aggregating by day, week, month, user,
+	-- project, provider or model is a query and not a migration.
+	CREATE TABLE IF NOT EXISTS ai_usage(id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, session TEXT NOT NULL, user TEXT, project TEXT, provider TEXT, model TEXT, data TEXT NOT NULL);
+	CREATE INDEX IF NOT EXISTS ai_usage_at ON ai_usage(at);
+	CREATE INDEX IF NOT EXISTS ai_usage_session ON ai_usage(session);`)
 	if err != nil {
 		db.Close()
 		return nil, err
+	}
+	// Again, now that the journal files exist.
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		if _, e := os.Stat(p); e == nil {
+			os.Chmod(p, 0600)
+		}
 	}
 	return db, nil
 }

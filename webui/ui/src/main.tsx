@@ -1,5 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { api, signIn, onSessionEnded, sessionExpired } from "./shared";
+import type { Confirmation, TextView } from "./shared";
+import { AICodePage } from "./aicode";
 // Type only: the client itself is imported lazily, when a console is opened.
 import type RFB from "@novnc/novnc";
 import "./style.css";
@@ -300,6 +303,7 @@ type LogEntry = {
 // a reload, the back button and a pasted #/logs link all land in the same place.
 type PageId =
   | "repo"
+  | "aicode"
   | "favorites"
   | "build"
   | "launch"
@@ -309,6 +313,12 @@ type PageId =
   | "activity";
 const menu: { id: PageId; label: string; icon: string; hint: string }[] = [
   { id: "repo", label: "Repository", icon: "◆", hint: "checkout and upstream" },
+  {
+    id: "aicode",
+    label: "AI Code Assistant",
+    icon: "✦",
+    hint: "ask, review, build",
+  },
   { id: "build", label: "New build", icon: "＋", hint: "configure and queue" },
   {
     id: "launch",
@@ -358,24 +368,6 @@ const maxAppRows = 300;
 // but stops marking them.
 const maxHighlights = 4000;
 
-type TextView = {
-  // Changing key refetches; it is what the open/close effects key on.
-  key: string;
-  title: string;
-  subtitle: string;
-  url: string;
-  // Logs fill the viewport; a config.ini is a few dozen lines and should not.
-  compact?: boolean;
-  deleteLabel?: string;
-  onDelete?: () => void;
-  // A conflicting file is the one text here that is written as well as read.
-  // Editing lives in this viewer rather than in a dialog of its own, so there
-  // stays exactly one reader — and now writer — for every file.
-  editable?: boolean;
-  saveLabel?: string;
-  onSave?: (text: string) => void;
-};
-
 // One reader for every build text file: the log tail and the archived
 // config.ini both land here rather than in a browser tab, so the whole file is
 // scrollable and searchable with matches highlighted. Same <dialog> primitive
@@ -410,7 +402,7 @@ function TextViewer({
     fetch(url, { headers: { "X-Requested-With": "ydfs-web" } })
       .then((r) => {
         if (r.status === 401) {
-          sessionEnded();
+          sessionExpired();
           return Promise.reject(new Error("Your session has ended."));
         }
         return r.ok ? r.text() : Promise.reject(new Error("Not available"));
@@ -570,17 +562,6 @@ function TextViewer({
   );
 }
 
-type Confirmation = {
-  title: string;
-  body: string;
-  confirm: string;
-  danger?: boolean;
-  onConfirm: () => void;
-  // A second way to say yes, for a question with two answers rather than one —
-  // a pull request carrying one commit, or that commit and its history.
-  alternate?: { label: string; onPick: () => void };
-};
-
 // The app never uses window.confirm/alert: a native dialog cannot be themed,
 // and blocks the whole page. <dialog> gives the focus trap, Escape handling and
 // backdrop for free, while staying styled like the rest of the UI.
@@ -657,46 +638,6 @@ function ConfirmDialog({
       )}
     </dialog>
   );
-}
-// The session behind this page has ended.
-//
-// The reverse proxy answers a *background* request with 401 rather than
-// redirecting it into a GitHub login: this page polls every few seconds, and a
-// login started on every tick would leave several in flight at once, where the
-// first callback to complete clears the CSRF cookie out from under the rest —
-// a 403 on a sign-in that was working. So the page is told plainly, stops
-// polling, and offers one Sign in button that navigates the whole tab.
-//
-// Set by App, so every request — including the plain fetch behind TextViewer —
-// reaches the same banner without each call site knowing about it.
-let sessionEnded: () => void = () => {};
-// Signing in has to be a navigation of the whole tab, never a fetch, and it
-// carries the screen being looked at so the login lands back on it.
-function signIn() {
-  const here = location.pathname + location.search + location.hash;
-  location.assign(`/oauth2/start?rd=${encodeURIComponent(here)}`);
-}
-async function api<T>(
-  path: string,
-  method = "GET",
-  body?: unknown,
-): Promise<T> {
-  const res = await fetch(`/api${path}`, {
-    method,
-    headers: {
-      "Content-Type": "application/json",
-      "X-Requested-With": "ydfs-web",
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const err = await res
-      .json()
-      .catch(() => ({ error: `Request failed (${res.status})` }));
-    if (res.status === 401) sessionEnded();
-    throw new Error(err.error);
-  }
-  return res.json();
 }
 // The live screen of the test machine, over noVNC.
 //
@@ -1238,10 +1179,8 @@ function App() {
   // polling, stop the log stream, and ask for one sign-in (see sessionEnded).
   const [expired, setExpired] = useState(false);
   useEffect(() => {
-    sessionEnded = () => setExpired(true);
-    return () => {
-      sessionEnded = () => {};
-    };
+    onSessionEnded(() => setExpired(true));
+    return () => onSessionEnded(() => {});
   }, []);
   const [notice, setNotice] = useState("");
   useEffect(() => {
@@ -1498,6 +1437,9 @@ function App() {
     n > 0 ? <span className={`nav-badge ${extra}`}>{n}</span> : null;
   const badges: Record<PageId, React.ReactNode> = {
     repo: repo && repo.behind > 0 ? badge(repo.behind, "warn") : null,
+    // The assistant owns its own state, so it carries no badge here rather
+    // than making this page poll a screen it does not otherwise know about.
+    aicode: null,
     favorites: badge(favorites.length),
     build: null,
     launch: vmLive ? <span className="nav-badge live">live</span> : null,
@@ -3075,6 +3017,12 @@ function App() {
             </div>
           )}
           {page === "repo" && repositoryBox}
+          {/* Its own module: the assistant is a screen of its own, with its
+              own hooks, and reuses this page's viewer and confirmation dialog
+              rather than growing a second of each. */}
+          {page === "aicode" && (
+            <AICodePage onView={setViewing} onAsk={setAsk} repo={repo} />
+          )}
           {page === "favorites" && favoritesBox}
           {page === "build" && (
             <div className="workspace">

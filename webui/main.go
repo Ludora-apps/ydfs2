@@ -71,6 +71,13 @@ type App struct {
 	pullsMu  sync.Mutex
 	pullList *PullRequests
 	pullsAt  time.Time
+	// The AI Code Assistant (see ai.go): the one generation in flight and the
+	// one proposal waiting for review. Its own lock for the same reason as
+	// vmMu and graftMu — reading a patch back must never wait on a build.
+	// Lock order, wherever both are needed, is a.mu then a.aiMu.
+	aiMu     sync.Mutex
+	aiCancel context.CancelFunc
+	patch    *Patch
 }
 
 func main() {
@@ -156,6 +163,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	a := &App{seen: map[string]time.Time{}, db: db, repo: absRepo, data: absData, origin: *origin, secret: os.Getenv("YDFS_PROXY_SECRET"), dev: *dev, minFree: *min * 1024 * 1024 * 1024, users: map[string]bool{}, wake: make(chan struct{}, 1), ctx: ctx, docker: "docker", kvm: "/dev/kvm", vmImage: vmImageTag, gh: "gh"}
+	// Secrets this process holds, so a provider error quoting one back can be
+	// scrubbed before it reaches a browser or the journal (see ai.go).
+	redactions = func() []string { return []string{a.secret, a.aiKey()} }
 	for _, u := range strings.Split(os.Getenv("YDFS_ALLOWED_USERS"), ",") {
 		if u = strings.TrimSpace(u); u != "" {
 			a.users[strings.ToLower(u)] = true
@@ -177,6 +187,9 @@ func main() {
 	// A conflict resolution is just as ephemeral, and its worktree is hundreds
 	// of megabytes belonging to a session nobody can reach any more.
 	a.reapGrafts(reapCtx)
+	// An applied AI proposal is not: files have already been written, and the
+	// content they replaced is the only way back (see aiworkspace.go).
+	a.restorePatch()
 	reapCancel()
 	done := make(chan struct{})
 	go func() { defer close(done); a.worker() }()
@@ -275,6 +288,20 @@ func (a *App) handler() http.Handler {
 	mux.HandleFunc("GET /api/repository/diff", a.repositoryDiff)
 	mux.HandleFunc("POST /api/repository/stage", a.repositoryStage)
 	mux.HandleFunc("POST /api/repository/commit", a.repositoryCommit)
+	mux.HandleFunc("GET /api/ai", a.aiInfo)
+	mux.HandleFunc("PUT /api/ai/config", a.aiConfigure)
+	mux.HandleFunc("POST /api/ai/message", a.aiMessage)
+	mux.HandleFunc("POST /api/ai/cancel", a.aiCancelGeneration)
+	mux.HandleFunc("POST /api/ai/session", a.aiNewSession)
+	mux.HandleFunc("GET /api/ai/usage", a.aiUsage)
+	mux.HandleFunc("GET /api/ai/files", a.aiFiles)
+	mux.HandleFunc("GET /api/ai/search", a.aiSearch)
+	mux.HandleFunc("GET /api/ai/file", a.aiFile)
+	mux.HandleFunc("GET /api/ai/errors", a.aiErrors)
+	mux.HandleFunc("GET /api/ai/patch", a.aiPatch)
+	mux.HandleFunc("POST /api/ai/patch/apply", a.aiApplyPatch)
+	mux.HandleFunc("POST /api/ai/patch/reject", a.aiRejectPatch)
+	mux.HandleFunc("POST /api/ai/build", a.aiAdoptBuild)
 	mux.HandleFunc("GET /api/flathub", a.flathubCatalogue)
 	mux.HandleFunc("POST /api/flathub/refresh", a.flathubRefresh)
 	mux.HandleFunc("GET /api/jobs", func(w http.ResponseWriter, r *http.Request) {
