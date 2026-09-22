@@ -1,7 +1,15 @@
 install -d $HOME/Desktop
 [ -e $HOME/tmp ] && export TMPDIR=$HOME/tmp
 
+# Does it works ???
 export PATH=$HOME/.local/bin:$PATH
+
+if [ ! -e $HOME/.bashrc ]
+then
+echo export PATH=$HOME/.local/bin:$HOME/.local/usr/bin:$PATH > $HOME/.bashrc
+echo export LD_LIBRATY_PATH=$HOME/.local/lib:$HOME/.local/usr/bin/:$LD_LIBRRY_PATH >> $HOME/.bashrc
+echo
+fi
 
 # for DBUS
 install -d $HOME_DIBAB/tmp
