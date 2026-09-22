@@ -69,7 +69,7 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 func TestGraftCleanMergeApplies(t *testing.T) {
 	a := forkFixture(t, false)
 	s := repoOf(t, request(a, "POST", "/api/repository/merge/preview", "{}"))
-	if s.Graft == nil || !s.Graft.Clean || len(s.Graft.Files) != 0 {
+	if s.Graft == nil || !s.Graft.Clean || s.Graft.Files == nil || len(s.Graft.Files) != 0 {
 		t.Fatalf("expected a clean graft, got %+v", s.Graft)
 	}
 	if s.Graft.Kind != "merge" || s.Graft.Base != s.Local.Revision {

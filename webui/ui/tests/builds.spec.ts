@@ -1395,3 +1395,35 @@ test("AI usage separates reported counts from estimates", async ({ page }) => {
   );
   await expect(panel).toContainText("0.0045 USD");
 });
+
+for (const files of [null, []]) {
+  test(`clean merge preview keeps the interface usable with files=${JSON.stringify(files)}`, async ({ page }) => {
+    await fixture(page);
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    let prepared = false;
+    const state = await page.evaluate(async () => (await fetch("/api/repository")).json());
+    state.upstream = { ...state.local, revision: "d".repeat(40) };
+    state.behind = 1;
+    const graft = {
+      kind: "merge", base: state.local.revision, branch: "2.12",
+      revision: state.upstream.revision, subject: "upstream commit",
+      clean: true, files, oursLabel: "This checkout", theirsLabel: "Upstream",
+      openedAt: "2026-09-19T10:00:00Z",
+    };
+    await page.route("**/api/repository**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/repository/merge/preview") prepared = true;
+      await route.fulfill({ json: { ...state, graft: prepared ? graft : undefined } });
+    });
+    await page.reload();
+    await open(page, "Repository");
+    await page.getByRole("button", { name: "Check merge" }).click();
+    await expect(page.locator(".graft")).toContainText("It applies cleanly");
+    await expect(page.getByRole("button", { name: "Apply merge", exact: true })).toBeEnabled();
+    await page.reload();
+    await expect(page.locator(".graft")).toContainText("It applies cleanly");
+    await open(page, "New build");
+    expect(errors).toEqual([]);
+  });
+}

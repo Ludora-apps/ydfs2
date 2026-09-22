@@ -126,7 +126,7 @@ type Graft = {
   revision: string;
   subject: string;
   clean: boolean;
-  files: Conflict[];
+  files: Conflict[] | null;
   // The two sides swap between a merge and a cherry-pick, so the server names
   // them rather than leaving the browser to guess which is which.
   oursLabel: string;
@@ -1823,6 +1823,7 @@ function App() {
   // Repository box, above the source boxes it froze, because it is about the
   // checkout rather than about any one repository.
   const g = repo?.graft;
+  const graftFiles = g?.files ?? [];
   const graftBox = g && (
     <section className="graft">
       <div className="graft-head">
@@ -1840,7 +1841,7 @@ function App() {
             {" · "}
             {g.clean
               ? "no conflict"
-              : `${g.files.filter((c) => !c.resolved).length} of ${g.files.length} file(s) left to resolve`}
+              : `${graftFiles.filter((c) => !c.resolved).length} of ${graftFiles.length} file(s) left to resolve`}
           </small>
         </div>
         <div className="repo-actions">
@@ -1856,7 +1857,7 @@ function App() {
             type="button"
             className="update"
             disabled={
-              !!repoBusy || g.files.some((c) => !c.resolved) || repo.dirty
+              !!repoBusy || graftFiles.some((c) => !c.resolved) || repo.dirty
             }
             onClick={applyGraft}
           >
@@ -1873,11 +1874,11 @@ function App() {
         its own, and only the final step fast-forwards the checkout onto it.
         Abandoning leaves everything exactly as it is now.
       </p>
-      {g.files.length === 0 ? (
+      {graftFiles.length === 0 ? (
         <p className="hint">It applies cleanly — nothing to resolve.</p>
       ) : (
         <ul className="graft-files">
-          {g.files.map((c) => (
+          {graftFiles.map((c) => (
             <li key={c.path} className={c.resolved ? "resolved" : ""}>
               <div className="graft-file">
                 <strong title={c.path}>{c.path}</strong>

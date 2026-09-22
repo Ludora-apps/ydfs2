@@ -150,7 +150,7 @@ func (a *App) conflicts(ctx context.Context, dir string) ([]Conflict, error) {
 		paths = append(paths, p)
 	}
 	sort.Strings(paths)
-	var list []Conflict
+	list := make([]Conflict, 0, len(paths))
 	for _, p := range paths {
 		st := stages[p]
 		c := Conflict{Path: p, Ours: st["2"], Theirs: st["3"]}
