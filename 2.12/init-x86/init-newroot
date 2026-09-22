@@ -22,6 +22,7 @@ mount -t tmpfs none /rootfs -o rw,noatime,mode=755,size=$TMPFSSIZE
 mkdir /rootfs/sys
 mkdir /rootfs/proc
 mkdir /rootfs/dev
+mv /ntfs-3g /rootfs
 mount -n -o move /sys /rootfs/sys
 mount -n -o move /proc /rootfs/proc
 mount -n -o move /dev /rootfs/dev
